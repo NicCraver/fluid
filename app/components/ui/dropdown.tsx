@@ -13,21 +13,19 @@ import {
   type ReactNode,
   type ReactElement,
   type HTMLAttributes,
-  type ComponentPropsWithoutRef,
+  type ComponentPropsWithoutRef
 } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { AnimatePresence, LazyMotion, domAnimation, m } from "framer-motion";
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 import { cn } from "~/lib/utils";
 import { spring, exitFallbackMs } from "~/lib/springs";
-import { useProximityHover } from "~/hooks/use-proximity-hover";
+import { useProximityHover, type ItemRect } from "~/hooks/use-proximity-hover";
 import { shapeMap } from "~/lib/shape-context";
 import { Elevated } from "~/lib/elevated";
 import {
   DropdownContext,
-  useDropdown,
-  useDropdownMaybe,
   type DropdownContextValue,
-  type MenuItemRenderOptions,
+  type MenuItemRenderOptions
 } from "~/components/ui/menu-item";
 
 // Dropdown opts out of the global pill/rounded shape context — popover surfaces
@@ -36,16 +34,114 @@ import {
 // scale and produces the corner-shadow asymmetry).
 const shape = shapeMap.rounded;
 
+interface DropdownHighlightsProps {
+  activeRect: ItemRect | null;
+  checkedRect: ItemRect | null;
+  focusRect: ItemRect | null;
+  sessionKey: number;
+}
+
+function DropdownHighlights({
+  activeRect,
+  checkedRect,
+  focusRect,
+  sessionKey
+}: DropdownHighlightsProps) {
+  return (
+    <>
+      <AnimatePresence>
+        {checkedRect && (
+          <m.div
+            layout
+            className={`absolute ${shape.bg} bg-active pointer-events-none`}
+            style={{
+              top: checkedRect.top,
+              left: checkedRect.left,
+              width: checkedRect.width,
+              height: checkedRect.height
+            }}
+            initial={false}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0, transition: spring.moderate.exit }}
+            transition={{
+              ...spring.moderate,
+              opacity: { duration: 0.08 }
+            }}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {activeRect && (
+          <m.div
+            layout
+            key={sessionKey}
+            className={`absolute ${shape.bg} bg-hover pointer-events-none`}
+            style={{
+              top: activeRect.top,
+              left: activeRect.left,
+              width: activeRect.width,
+              height: activeRect.height,
+              transformOrigin: "top left"
+            }}
+            initial={{
+              opacity: 0,
+              x: (checkedRect?.left ?? activeRect.left) - activeRect.left,
+              y: (checkedRect?.top ?? activeRect.top) - activeRect.top,
+              scaleX:
+                (checkedRect?.width ?? activeRect.width) / activeRect.width,
+              scaleY:
+                (checkedRect?.height ?? activeRect.height) / activeRect.height
+            }}
+            animate={{
+              opacity: 1,
+              x: 0,
+              y: 0,
+              scaleX: 1,
+              scaleY: 1
+            }}
+            exit={{ opacity: 0, transition: spring.fast.exit }}
+            transition={{
+              ...spring.fast,
+              opacity: { duration: 0.08 }
+            }}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {focusRect && (
+          <m.div
+            layout
+            className={`absolute ${shape.focusRing} pointer-events-none z-20 border border-[color:var(--focus-ring,#6B97FF)]`}
+            style={{
+              left: focusRect.left - 2,
+              top: focusRect.top - 2,
+              width: focusRect.width + 4,
+              height: focusRect.height + 4
+            }}
+            initial={false}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0, transition: spring.fast.exit }}
+            transition={{
+              ...spring.fast,
+              opacity: { duration: 0.08 }
+            }}
+          />
+        )}
+      </AnimatePresence>
+    </>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Panel context — shared by the inline Dropdown and the popup DropdownContent.
 //
 // The context object itself lives in menu-item.tsx so MenuItem resolves
 // whichever dropdown provider actually wraps it, even when dropdowns built
-// on different primitives render side by side. Re-exported here so the
-// public dropdown API is unchanged.
+// on different primitives render side by side.
 // ---------------------------------------------------------------------------
 
-export { useDropdown, useDropdownMaybe };
 export type { DropdownContextValue, MenuItemRenderOptions };
 
 // ---------------------------------------------------------------------------
@@ -74,7 +170,7 @@ const Dropdown = forwardRef<HTMLDivElement, DropdownProps>(
       sessionRef,
       handlers,
       registerItem,
-      measureItems,
+      measureItems
     } = useProximityHover(containerRef);
 
     useEffect(() => {
@@ -84,144 +180,96 @@ const Dropdown = forwardRef<HTMLDivElement, DropdownProps>(
     const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
 
     const activeRect = activeIndex !== null ? itemRects[activeIndex] : null;
-    const checkedRect =
-      checkedIndex != null ? itemRects[checkedIndex] : null;
+    const checkedRect = checkedIndex != null ? itemRects[checkedIndex] : null;
     const focusRect = focusedIndex !== null ? itemRects[focusedIndex] : null;
+    const contextValue = useMemo(
+      () => ({ registerItem, activeIndex, checkedIndex }),
+      [registerItem, activeIndex, checkedIndex]
+    );
+
     return (
-      <DropdownContext.Provider value={{ registerItem, activeIndex, checkedIndex }}>
-        <Elevated
-          offset={2}
-          shadowLevel={3}
-          ref={(node) => {
-            (containerRef as React.MutableRefObject<HTMLDivElement | null>).current = node;
-            if (typeof ref === "function") ref(node);
-            else if (ref) (ref as React.MutableRefObject<HTMLDivElement | null>).current = node;
-          }}
-          onMouseEnter={handlers.onMouseEnter}
-          onMouseMove={handlers.onMouseMove}
-          onMouseLeave={handlers.onMouseLeave}
-          onFocus={(e) => {
-            const indexAttr = (e.target as HTMLElement)
-              .closest("[data-proximity-index]")
-              ?.getAttribute("data-proximity-index");
-            if (indexAttr != null) {
-              const idx = Number(indexAttr);
-              setActiveIndex(idx);
-              setFocusedIndex(
-                (e.target as HTMLElement).matches(":focus-visible") ? idx : null
-              );
-            }
-          }}
-          onBlur={(e) => {
-            if (containerRef.current?.contains(e.relatedTarget as Node)) return;
-            setFocusedIndex(null);
-            setActiveIndex(null);
-          }}
-          onKeyDown={(e) => {
-            const items = Array.from(
-              containerRef.current?.querySelectorAll(
-                '[role="menuitem"], [role="menuitemradio"]'
-              ) ?? []
-            ) as HTMLElement[];
-            const currentIdx = items.indexOf(e.target as HTMLElement);
-            if (currentIdx === -1) return;
+      <LazyMotion features={domAnimation} strict>
+        <DropdownContext.Provider value={contextValue}>
+          <Elevated
+            offset={2}
+            shadowLevel={3}
+            ref={(node) => {
+              (
+                containerRef as React.MutableRefObject<HTMLDivElement | null>
+              ).current = node;
+              if (typeof ref === "function") ref(node);
+              else if (ref)
+                (ref as React.MutableRefObject<HTMLDivElement | null>).current =
+                  node;
+            }}
+            onMouseEnter={handlers.onMouseEnter}
+            onMouseMove={handlers.onMouseMove}
+            onMouseLeave={handlers.onMouseLeave}
+            onFocus={(e) => {
+              const indexAttr = (e.target as HTMLElement)
+                .closest("[data-proximity-index]")
+                ?.getAttribute("data-proximity-index");
+              if (indexAttr != null) {
+                const idx = Number(indexAttr);
+                setActiveIndex(idx);
+                setFocusedIndex(
+                  (e.target as HTMLElement).matches(":focus-visible")
+                    ? idx
+                    : null
+                );
+              }
+            }}
+            onBlur={(e) => {
+              if (containerRef.current?.contains(e.relatedTarget as Node))
+                return;
+              setFocusedIndex(null);
+              setActiveIndex(null);
+            }}
+            onKeyDown={(e) => {
+              const items = Array.from(
+                containerRef.current?.querySelectorAll(
+                  '[role="menuitem"], [role="menuitemradio"]'
+                ) ?? []
+              ) as HTMLElement[];
+              const currentIdx = items.indexOf(e.target as HTMLElement);
+              if (currentIdx === -1) return;
 
-            if (["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft"].includes(e.key)) {
-              e.preventDefault();
-              const next = ["ArrowDown", "ArrowRight"].includes(e.key)
-                ? (currentIdx + 1) % items.length
-                : (currentIdx - 1 + items.length) % items.length;
-              items[next].focus();
-            } else if (e.key === "Home") {
-              e.preventDefault();
-              items[0]?.focus();
-            } else if (e.key === "End") {
-              e.preventDefault();
-              items[items.length - 1]?.focus();
-            }
-          }}
-          role="group"
-          className={cn(
-            `relative flex flex-col gap-0.5 w-72 max-w-full ${shape.container} p-1 select-none`,
-            className
-          )}
-          {...props}
-        >
-          {/* Selected background */}
-          <AnimatePresence>
-            {checkedRect && (
-              <motion.div
-                className={`absolute ${shape.bg} bg-active pointer-events-none`}
-                initial={false}
-                animate={{
-                  top: checkedRect.top,
-                  left: checkedRect.left,
-                  width: checkedRect.width,
-                  height: checkedRect.height,
-                  opacity: 1,
-                }}
-                exit={{ opacity: 0, transition: spring.moderate.exit }}
-                transition={{
-                  ...spring.moderate,
-                  opacity: { duration: 0.08 },
-                }}
-              />
+              if (
+                ["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft"].includes(
+                  e.key
+                )
+              ) {
+                e.preventDefault();
+                const next = ["ArrowDown", "ArrowRight"].includes(e.key)
+                  ? (currentIdx + 1) % items.length
+                  : (currentIdx - 1 + items.length) % items.length;
+                items[next].focus();
+              } else if (e.key === "Home") {
+                e.preventDefault();
+                items[0]?.focus();
+              } else if (e.key === "End") {
+                e.preventDefault();
+                items[items.length - 1]?.focus();
+              }
+            }}
+            role="group"
+            className={cn(
+              `relative flex flex-col gap-0.5 w-72 max-w-full ${shape.container} p-1 select-none`,
+              className
             )}
-          </AnimatePresence>
+            {...props}
+          >
+            <DropdownHighlights
+              activeRect={activeRect}
+              checkedRect={checkedRect}
+              focusRect={focusRect}
+              sessionKey={sessionRef.current}
+            />
 
-          {/* Hover background */}
-          <AnimatePresence>
-            {activeRect && (
-              <motion.div
-                key={sessionRef.current}
-                className={`absolute ${shape.bg} bg-hover pointer-events-none`}
-                initial={{
-                  opacity: 0,
-                  top: checkedRect?.top ?? activeRect.top,
-                  left: checkedRect?.left ?? activeRect.left,
-                  width: checkedRect?.width ?? activeRect.width,
-                  height: checkedRect?.height ?? activeRect.height,
-                }}
-                animate={{
-                  opacity: 1,
-                  top: activeRect.top,
-                  left: activeRect.left,
-                  width: activeRect.width,
-                  height: activeRect.height,
-                }}
-                exit={{ opacity: 0, transition: spring.fast.exit }}
-                transition={{
-                  ...spring.fast,
-                  opacity: { duration: 0.08 },
-                }}
-              />
-            )}
-          </AnimatePresence>
-
-          {/* Focus ring */}
-          <AnimatePresence>
-            {focusRect && (
-              <motion.div
-                className={`absolute ${shape.focusRing} pointer-events-none z-20 border border-[color:var(--focus-ring,#6B97FF)]`}
-                initial={false}
-                animate={{
-                  left: focusRect.left - 2,
-                  top: focusRect.top - 2,
-                  width: focusRect.width + 4,
-                  height: focusRect.height + 4,
-                }}
-                exit={{ opacity: 0, transition: spring.fast.exit }}
-                transition={{
-                  ...spring.fast,
-                  opacity: { duration: 0.08 },
-                }}
-              />
-            )}
-          </AnimatePresence>
-
-          {children}
-        </Elevated>
-      </DropdownContext.Provider>
+            {children}
+          </Elevated>
+        </DropdownContext.Provider>
+      </LazyMotion>
     );
   }
 );
@@ -249,10 +297,7 @@ const DropdownMenuContext = createContext<DropdownMenuContextValue | null>(null)
 
 function useDropdownMenuContext() {
   const ctx = useContext(DropdownMenuContext);
-  if (!ctx)
-    throw new Error(
-      "DropdownMenu compound components must be inside <DropdownMenu>"
-    );
+  if (!ctx) throw new Error("DropdownMenu compound components must be inside <DropdownMenu>");
   return ctx;
 }
 
@@ -269,7 +314,7 @@ function DropdownMenu({
   open: openProp,
   defaultOpen = false,
   onOpenChange,
-  disabled = false,
+  disabled = false
 }: DropdownMenuProps) {
   const [internalOpen, setInternalOpen] = useState(defaultOpen);
   const open = openProp !== undefined ? openProp : internalOpen;
@@ -290,11 +335,7 @@ function DropdownMenu({
           instead of being forwarded), so DropdownContent can drive the exit
           animation before the portal unmounts. Non-modal: the page keeps
           scrolling and the popup tracks its anchor instead of detaching. */}
-      <DropdownMenuPrimitive.Root
-        open={open}
-        onOpenChange={handleOpenChange}
-        modal={false}
-      >
+      <DropdownMenuPrimitive.Root open={open} onOpenChange={handleOpenChange} modal={false}>
         {children}
       </DropdownMenuPrimitive.Root>
     </DropdownMenuContext.Provider>
@@ -315,8 +356,7 @@ DropdownMenu.displayName = "DropdownMenu";
 // with Base UI's Menu.Root: the flag flows through context onto the trigger.
 // ---------------------------------------------------------------------------
 
-interface DropdownTriggerProps
-  extends Omit<
+interface DropdownTriggerProps extends Omit<
     ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Trigger>,
     "asChild"
   > {
@@ -332,12 +372,7 @@ const DropdownTrigger = forwardRef<HTMLButtonElement, DropdownTriggerProps>(
 
     if (render) {
       return (
-        <DropdownMenuPrimitive.Trigger
-          ref={ref}
-          asChild
-          disabled={isDisabled}
-          {...props}
-        >
+        <DropdownMenuPrimitive.Trigger ref={ref} asChild disabled={isDisabled} {...props}>
           {render}
         </DropdownMenuPrimitive.Trigger>
       );
@@ -362,9 +397,7 @@ DropdownTrigger.displayName = "DropdownTrigger";
 // radio values are strings, so the index maps through String()).
 // ---------------------------------------------------------------------------
 
-type RadixContentProps = ComponentPropsWithoutRef<
-  typeof DropdownMenuPrimitive.Content
->;
+type RadixContentProps = ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Content>;
 
 interface DropdownContentProps {
   children: ReactNode;
@@ -385,7 +418,7 @@ const DropdownContent = forwardRef<HTMLDivElement, DropdownContentProps>(
       checkedIndex,
       side = "bottom",
       align = "start",
-      sideOffset = 6,
+      sideOffset = 6
     },
     ref
   ) => {
@@ -399,7 +432,7 @@ const DropdownContent = forwardRef<HTMLDivElement, DropdownContentProps>(
       sessionRef,
       handlers,
       registerItem,
-      measureItems,
+      measureItems
     } = useProximityHover(containerRef);
 
     const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
@@ -419,7 +452,10 @@ const DropdownContent = forwardRef<HTMLDivElement, DropdownContentProps>(
     // safety buffer.
     useEffect(() => {
       if (open) return;
-      const id = setTimeout(() => setMounted(false), exitFallbackMs(spring.fast));
+      const id = setTimeout(
+        () => setMounted(false),
+        exitFallbackMs(spring.fast)
+      );
       return () => clearTimeout(id);
     }, [open]);
 
@@ -455,7 +491,7 @@ const DropdownContent = forwardRef<HTMLDivElement, DropdownContentProps>(
         label,
         closeOnClick,
         element,
-        children,
+        children
       }: MenuItemRenderOptions) => {
         const commonProps = {
           asChild: true,
@@ -465,11 +501,14 @@ const DropdownContent = forwardRef<HTMLDivElement, DropdownContentProps>(
           // event keeps it open — Base UI's closeOnClick={false} parity.
           onSelect: closeOnClick
             ? undefined
-            : (event: Event) => event.preventDefault(),
+            : (event: Event) => event.preventDefault()
         };
         const item = cloneElement(element, {}, children);
         return radio ? (
-          <DropdownMenuPrimitive.RadioItem value={String(value)} {...commonProps}>
+          <DropdownMenuPrimitive.RadioItem
+            value={String(value)}
+            {...commonProps}
+          >
             {item}
           </DropdownMenuPrimitive.RadioItem>
         ) : (
@@ -487,7 +526,7 @@ const DropdownContent = forwardRef<HTMLDivElement, DropdownContentProps>(
         activeIndex,
         checkedIndex,
         inMenu: true,
-        renderMenuItem,
+        renderMenuItem
       }),
       [registerItem, activeIndex, checkedIndex, renderMenuItem]
     );
@@ -495,163 +534,102 @@ const DropdownContent = forwardRef<HTMLDivElement, DropdownContentProps>(
     if (!mounted) return null;
 
     return (
-      <DropdownMenuPrimitive.Portal forceMount>
-        <DropdownMenuPrimitive.Content
-          asChild
-          forceMount
-          side={side}
-          align={align}
-          sideOffset={sideOffset}
-        >
-          <motion.div
-            className="z-50 outline-none"
-            initial={{ opacity: 0, y: -4, scaleY: 0.96 }}
-            animate={
-              open
-                ? { opacity: 1, y: 0, scaleY: 1 }
-                : { opacity: 0, y: -4, scaleY: 0.96 }
-            }
-            transition={open ? spring.fast : spring.fast.exit}
-            style={{ transformOrigin: "top center" }}
-            // Release the deferred unmount once the exit spring has finished
-            // so the close animation fully plays.
-            onAnimationComplete={() => {
-              if (!open) setMounted(false);
-            }}
+      <LazyMotion features={domAnimation} strict>
+        <DropdownMenuPrimitive.Portal forceMount>
+          <DropdownMenuPrimitive.Content
+            asChild
+            forceMount
+            side={side}
+            align={align}
+            sideOffset={sideOffset}
           >
-            <DropdownContext.Provider value={contentCtx}>
-              <Elevated
-                offset={2}
-                shadowLevel={3}
-                ref={(node: HTMLDivElement | null) => {
-                  (
-                    containerRef as React.MutableRefObject<HTMLDivElement | null>
-                  ).current = node;
-                  if (typeof ref === "function") ref(node);
-                  else if (ref)
+            <m.div
+              className="z-50 outline-none"
+              initial={{ opacity: 0, y: -4, scaleY: 0.96 }}
+              animate={
+                open
+                  ? { opacity: 1, y: 0, scaleY: 1 }
+                  : { opacity: 0, y: -4, scaleY: 0.96 }
+              }
+              transition={open ? spring.fast : spring.fast.exit}
+              style={{ transformOrigin: "top center" }}
+              // Release the deferred unmount once the exit spring has finished
+              // so the close animation fully plays.
+              onAnimationComplete={() => {
+                if (!open) setMounted(false);
+              }}
+            >
+              <DropdownContext.Provider value={contentCtx}>
+                <Elevated
+                  offset={2}
+                  shadowLevel={3}
+                  ref={(node: HTMLDivElement | null) => {
                     (
-                      ref as React.MutableRefObject<HTMLDivElement | null>
+                      containerRef as React.MutableRefObject<HTMLDivElement | null>
                     ).current = node;
-                }}
-                onMouseEnter={() => {
-                  handlers.onMouseEnter();
-                  setFocusedIndex(null);
-                }}
-                onMouseMove={handlers.onMouseMove}
-                onMouseLeave={handlers.onMouseLeave}
-                onFocus={(e) => {
-                  const indexAttr = (e.target as HTMLElement)
-                    .closest("[data-proximity-index]")
-                    ?.getAttribute("data-proximity-index");
-                  if (indexAttr != null) {
-                    const idx = Number(indexAttr);
-                    setActiveIndex(idx);
-                    setFocusedIndex(
-                      (e.target as HTMLElement).matches(":focus-visible")
-                        ? idx
-                        : null
-                    );
-                  }
-                }}
-                onBlur={(e) => {
-                  if (containerRef.current?.contains(e.relatedTarget as Node))
-                    return;
-                  setFocusedIndex(null);
-                  setActiveIndex(null);
-                }}
-                className={cn(
-                  // min-w tracks the trigger; the available-height guard maps
-                  // Base UI's --available-height to Radix's equivalent var.
-                  `relative flex flex-col gap-0.5 w-72 max-w-full min-w-[var(--radix-dropdown-menu-trigger-width)] max-h-[min(480px,var(--radix-dropdown-menu-content-available-height))] overflow-y-auto ${shape.container} p-1 select-none outline-none`,
-                  className
-                )}
-              >
-                {/* Selected background */}
-                <AnimatePresence>
-                  {checkedRect && (
-                    <motion.div
-                      className={`absolute ${shape.bg} bg-active pointer-events-none`}
-                      initial={false}
-                      animate={{
-                        top: checkedRect.top,
-                        left: checkedRect.left,
-                        width: checkedRect.width,
-                        height: checkedRect.height,
-                        opacity: 1,
-                      }}
-                      exit={{ opacity: 0, transition: spring.moderate.exit }}
-                      transition={{
-                        ...spring.moderate,
-                        opacity: { duration: 0.08 },
-                      }}
-                    />
+                    if (typeof ref === "function") ref(node);
+                    else if (ref)
+                      (
+                        ref as React.MutableRefObject<HTMLDivElement | null>
+                      ).current = node;
+                  }}
+                  onMouseEnter={() => {
+                    handlers.onMouseEnter();
+                    setFocusedIndex(null);
+                  }}
+                  onMouseMove={handlers.onMouseMove}
+                  onMouseLeave={handlers.onMouseLeave}
+                  onFocus={(e) => {
+                    const indexAttr = (e.target as HTMLElement)
+                      .closest("[data-proximity-index]")
+                      ?.getAttribute("data-proximity-index");
+                    if (indexAttr != null) {
+                      const idx = Number(indexAttr);
+                      setActiveIndex(idx);
+                      setFocusedIndex(
+                        (e.target as HTMLElement).matches(":focus-visible")
+                          ? idx
+                          : null
+                      );
+                    }
+                  }}
+                  onBlur={(e) => {
+                    if (containerRef.current?.contains(e.relatedTarget as Node))
+                      return;
+                    setFocusedIndex(null);
+                    setActiveIndex(null);
+                  }}
+                  className={cn(
+                    // min-w tracks the trigger; the available-height guard maps
+                    // Base UI's --available-height to Radix's equivalent var.
+                    `relative flex flex-col gap-0.5 w-72 max-w-full min-w-[var(--radix-dropdown-menu-trigger-width)] max-h-[min(480px,var(--radix-dropdown-menu-content-available-height))] overflow-y-auto ${shape.container} p-1 select-none outline-none`,
+                    className
                   )}
-                </AnimatePresence>
+                >
+                  <DropdownHighlights
+                    activeRect={activeRect}
+                    checkedRect={checkedRect}
+                    focusRect={focusRect}
+                    sessionKey={sessionRef.current}
+                  />
 
-                {/* Hover background */}
-                <AnimatePresence>
-                  {activeRect && (
-                    <motion.div
-                      key={sessionRef.current}
-                      className={`absolute ${shape.bg} bg-hover pointer-events-none`}
-                      initial={{
-                        opacity: 0,
-                        top: checkedRect?.top ?? activeRect.top,
-                        left: checkedRect?.left ?? activeRect.left,
-                        width: checkedRect?.width ?? activeRect.width,
-                        height: checkedRect?.height ?? activeRect.height,
-                      }}
-                      animate={{
-                        opacity: 1,
-                        top: activeRect.top,
-                        left: activeRect.left,
-                        width: activeRect.width,
-                        height: activeRect.height,
-                      }}
-                      exit={{ opacity: 0, transition: spring.fast.exit }}
-                      transition={{
-                        ...spring.fast,
-                        opacity: { duration: 0.08 },
-                      }}
-                    />
-                  )}
-                </AnimatePresence>
-
-                {/* Focus ring */}
-                <AnimatePresence>
-                  {focusRect && (
-                    <motion.div
-                      className={`absolute ${shape.focusRing} pointer-events-none z-20 border border-[color:var(--focus-ring,#6B97FF)]`}
-                      initial={false}
-                      animate={{
-                        left: focusRect.left - 2,
-                        top: focusRect.top - 2,
-                        width: focusRect.width + 4,
-                        height: focusRect.height + 4,
-                      }}
-                      exit={{ opacity: 0, transition: spring.fast.exit }}
-                      transition={{
-                        ...spring.fast,
-                        opacity: { duration: 0.08 },
-                      }}
-                    />
-                  )}
-                </AnimatePresence>
-
-                {/* display: contents keeps items direct flex children of the
+                  {/* display: contents keeps items direct flex children of the
                     panel so proximity measurement and gap layout still work,
                     while the group provides the radio value context. */}
-                <DropdownMenuPrimitive.RadioGroup
-                  value={checkedIndex != null ? String(checkedIndex) : undefined}
-                  className="contents"
-                >
-                  {children}
-                </DropdownMenuPrimitive.RadioGroup>
-              </Elevated>
-            </DropdownContext.Provider>
-          </motion.div>
-        </DropdownMenuPrimitive.Content>
-      </DropdownMenuPrimitive.Portal>
+                  <DropdownMenuPrimitive.RadioGroup
+                    value={
+                      checkedIndex != null ? String(checkedIndex) : undefined
+                    }
+                    className="contents"
+                  >
+                    {children}
+                  </DropdownMenuPrimitive.RadioGroup>
+                </Elevated>
+              </DropdownContext.Provider>
+            </m.div>
+          </DropdownMenuPrimitive.Content>
+        </DropdownMenuPrimitive.Portal>
+      </LazyMotion>
     );
   }
 );
@@ -666,10 +644,7 @@ const DropdownLabel = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>
   ({ className, ...props }, ref) => (
     <div
       ref={ref}
-      className={cn(
-        "px-2 py-1.5 shrink-0 text-[11px] text-muted-foreground",
-        className
-      )}
+      className={cn("px-2 py-1.5 shrink-0 text-[11px] text-muted-foreground", className)}
       {...props}
     />
   )
@@ -682,13 +657,12 @@ DropdownLabel.displayName = "DropdownLabel";
 // ---------------------------------------------------------------------------
 
 const DropdownSeparator = forwardRef<
-  HTMLDivElement,
-  HTMLAttributes<HTMLDivElement>
+  HTMLHRElement,
+  ComponentPropsWithoutRef<"hr">
 >(({ className, ...props }, ref) => (
-  <div
+  <hr
     ref={ref}
-    role="separator"
-    className={cn("my-1 -mx-1 h-px shrink-0 bg-border/60", className)}
+    className={cn("my-1 -mx-1 h-px shrink-0 border-0 bg-border/60", className)}
     {...props}
   />
 ));
@@ -701,12 +675,7 @@ export {
   DropdownSeparator,
   DropdownMenu,
   DropdownTrigger,
-  DropdownContent,
+  DropdownContent
 };
-export type {
-  DropdownProps,
-  DropdownMenuProps,
-  DropdownTriggerProps,
-  DropdownContentProps,
-};
+export type { DropdownProps, DropdownMenuProps, DropdownTriggerProps, DropdownContentProps };
 export default Dropdown;
