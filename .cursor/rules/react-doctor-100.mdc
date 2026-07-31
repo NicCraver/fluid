@@ -1,0 +1,52 @@
+---
+description: After every code change, run React Doctor and iterate until score is 100
+alwaysApply: true
+---
+
+# React Doctor — 必须满分（100/100）
+
+## 强制门禁
+
+每次修改 React/TSX/相关前端代码后（包括本次任务结束前），**必须**运行 React Doctor，且健康分必须达到 **100**。未达 100 不得声称完成、不得停止修改。
+
+## 必跑命令
+
+```bash
+npm run doctor
+# 或
+npx react-doctor@latest --verbose -y
+```
+
+快速看分数：
+
+```bash
+npm run doctor:score
+# 或
+npx react-doctor@latest --score -y
+```
+
+变更范围回归检查（改完后也要用 full 扫确认总分 100）：
+
+```bash
+npx react-doctor@latest --verbose --scope changed -y
+```
+
+## 工作流（不可跳过）
+
+1. 完成代码修改
+2. 运行 `npm run doctor`（或等价命令）
+3. 若分数 `< 100`：按 severity 修（errors → warnings），再重跑
+4. 重复直到输出分数为 **100**
+5. 只有分数为 100 时，才可 commit / 宣称任务完成
+
+## 禁止事项
+
+- 禁止用关闭规则、忽略 tag、或改 `doctor.config` 来“刷分”，除非用户明确要求
+- 禁止把未达 100 的状态当作完成
+- 禁止只扫 `--scope changed` 就结束；最终必须以全量扫描分数 = 100 为准
+
+## 修复原则
+
+- 把诊断当假设：先读相关代码，确认真阳性再改
+- 优先修高置信、保行为的修复
+- 需要产品/架构决策时先停下询问；其余问题继续修到 100
