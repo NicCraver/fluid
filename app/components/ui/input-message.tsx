@@ -9,13 +9,23 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type CSSProperties,
   type DragEvent as ReactDragEvent,
+  type ForwardedRef,
   type HTMLAttributes,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
+  type RefObject,
   type TextareaHTMLAttributes,
 } from "react";
-import { AnimatePresence, motion, Reorder, useReducedMotion } from "framer-motion";
+import {
+  AnimatePresence,
+  domAnimation,
+  LazyMotion,
+  m,
+  Reorder,
+  useReducedMotion,
+} from "framer-motion";
 import { cn } from "~/lib/utils";
 import { fontWeights } from "~/lib/font-weight";
 import { spring } from "~/lib/springs";
@@ -46,6 +56,7 @@ function useIsTouch() {
 }
 
 const DEFAULT_ACCEPT = "image/png,image/jpeg,application/pdf";
+const EMPTY_HISTORY: string[] = [];
 
 interface InputMessageSlotContext {
   /** Opens the native file picker via the hidden `<input type="file">`.
@@ -75,11 +86,9 @@ interface InputMessageProps
   value: string;
   /** Called with the new value on every textarea change. */
   onValueChange: (value: string) => void;
-  /** Fired when the user submits (Enter or the send button) and when a queued
-   *  message auto-dispatches. Receives the trimmed value, the attached files,
-   *  and — for auto-dispatched queue items — `meta.queuedId` (the originating
-   *  QueuedMessage id), so a consumer can e.g. morph the queued item into the
-   *  sent message via a shared-layout (`layoutId`) transition. */
+  /** Fired when the user submits with Enter or the send button. Receives the
+   *  trimmed value and attached files. `meta.queuedId` is retained for callers
+   *  that route queued items through the same callback. */
   onSend?: (
     value: string,
     files: File[],
@@ -120,13 +129,11 @@ interface InputMessageProps
     "value" | "onChange" | "onKeyDown" | "disabled" | "placeholder"
   >;
   /** Assistant response state. When `"streaming"`, the send button becomes a
-   *  Stop control (empty draft) or a Queue action (non-empty draft); on the
-   *  `streaming → idle` edge the next queued message auto-dispatches via `onSend`.
+   *  Stop control (empty draft) or a Queue action (non-empty draft). The queue
+   *  owner is responsible for dispatching its next item when a response ends.
    *  Leave undefined to keep the legacy send-immediately behavior. */
   status?: "idle" | "streaming";
-  /** Fired when the Stop control is pressed (streaming, empty draft). The
-   *  consumer should halt the current response and flip `status` to `"idle"`,
-   *  which immediately dispatches the next queued message. */
+  /** Fired when the Stop control is pressed (streaming, empty draft). */
   onStop?: () => void;
   /** Controlled queue of pending messages. Requires `status` to be controlled. */
   queue?: QueuedMessage[];
@@ -156,7 +163,7 @@ function FilePreviewTile({ file, onRemove, size }: FilePreviewTileProps) {
   const XIcon = useIcon("x");
 
   return (
-    <motion.div
+    <m.div
       // `layout` animates sibling tiles into the gap when one is removed.
       // Enter: spring-fast (0.08s) — the chip category per animation-guidelines.md.
       // Exit: 0.06s linear — "exits should be slightly faster than enter",
@@ -188,7 +195,7 @@ function FilePreviewTile({ file, onRemove, size }: FilePreviewTileProps) {
           <XIcon size={12} strokeWidth={2.5} />
         </button>
       </Tooltip>
-    </motion.div>
+    </m.div>
   );
 }
 
@@ -302,6 +309,574 @@ function QueuedRow({
   );
 }
 
+interface FileControlsOptions {
+  accept: string;
+  disabled?: boolean;
+  files: File[];
+  leftSlot?: InputMessageSlot;
+  maxFiles?: number;
+  onFilesChange?: (files: File[]) => void;
+  rightSlot?: InputMessageSlot;
+}
+
+function useFileControls({
+  accept,
+  disabled,
+  files,
+  leftSlot,
+  maxFiles,
+  onFilesChange,
+  rightSlot,
+}: FileControlsOptions) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const supportsFiles = onFilesChange !== undefined;
+  const acceptTokens = useMemo(
+    () => accept.split(",").map((token) => token.trim()).filter(Boolean),
+    [accept]
+  );
+  const matchesAccept = useCallback(
+    (file: File) =>
+      acceptTokens.some((token) => {
+        if (token.endsWith("/*")) {
+          return file.type.startsWith(token.slice(0, -1));
+        }
+        if (token.startsWith(".")) {
+          return file.name.toLowerCase().endsWith(token.toLowerCase());
+        }
+        return file.type === token;
+      }),
+    [acceptTokens]
+  );
+  const addFiles = useCallback(
+    (incoming: File[]) => {
+      if (!onFilesChange) return;
+      const fingerprint = (file: File) =>
+        `${file.name}-${file.size}-${file.lastModified}`;
+      const existing = new Set(files.map(fingerprint));
+      const accepted: File[] = [];
+      for (const file of incoming) {
+        if (!matchesAccept(file)) continue;
+        const key = fingerprint(file);
+        if (existing.has(key)) continue;
+        existing.add(key);
+        accepted.push(file);
+      }
+      if (accepted.length === 0) return;
+      const next = [...files, ...accepted];
+      onFilesChange(maxFiles == null ? next : next.slice(0, maxFiles));
+    },
+    [files, matchesAccept, maxFiles, onFilesChange]
+  );
+  const removeFile = useCallback(
+    (index: number) => {
+      onFilesChange?.(files.filter((_, fileIndex) => fileIndex !== index));
+    },
+    [files, onFilesChange]
+  );
+  const openFilePicker = useCallback(
+    (overrideAccept?: string) => {
+      const input = fileInputRef.current;
+      if (!input) return;
+      if (overrideAccept) {
+        input.accept = overrideAccept;
+        input.click();
+        queueMicrotask(() => {
+          if (fileInputRef.current) fileInputRef.current.accept = accept;
+        });
+        return;
+      }
+      input.click();
+    },
+    [accept]
+  );
+  const slotContext = useMemo<InputMessageSlotContext>(
+    () => ({ openFilePicker, files }),
+    [files, openFilePicker]
+  );
+  const handleDragOver = useCallback(
+    (event: ReactDragEvent<HTMLDivElement>) => {
+      if (!supportsFiles || disabled) return;
+      if (!Array.from(event.dataTransfer.types).includes("Files")) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      setDragOver(true);
+    },
+    [disabled, supportsFiles]
+  );
+  const handleDragLeave = useCallback(
+    (event: ReactDragEvent<HTMLDivElement>) => {
+      const next = event.relatedTarget as Node | null;
+      if (next && event.currentTarget.contains(next)) return;
+      setDragOver(false);
+    },
+    []
+  );
+  const handleDrop = useCallback(
+    (event: ReactDragEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      setDragOver(false);
+      if (!supportsFiles || disabled) return;
+      addFiles(Array.from(event.dataTransfer.files));
+    },
+    [addFiles, disabled, supportsFiles]
+  );
+  const handleFileInputChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      if (!event.target.files) return;
+      addFiles(Array.from(event.target.files));
+      event.target.value = "";
+    },
+    [addFiles]
+  );
+
+  return {
+    dragOver,
+    fileInputRef,
+    handleDragLeave,
+    handleDragOver,
+    handleDrop,
+    handleFileInputChange,
+    leftContent:
+      typeof leftSlot === "function" ? leftSlot(slotContext) : leftSlot,
+    removeFile,
+    rightContent:
+      typeof rightSlot === "function" ? rightSlot(slotContext) : rightSlot,
+    supportsFiles,
+  };
+}
+
+interface QueueControlsOptions {
+  disabled?: boolean;
+  files: File[];
+  maxFiles?: number;
+  onFilesChange?: (files: File[]) => void;
+  onHistoryReset: () => void;
+  onQueueChange?: (queue: QueuedMessage[]) => void;
+  onSend?: InputMessageProps["onSend"];
+  onValueChange: (value: string) => void;
+  queue?: QueuedMessage[];
+  status?: "idle" | "streaming";
+  supportsFiles: boolean;
+  textareaRef: RefObject<HTMLTextAreaElement | null>;
+  value: string;
+}
+
+function useQueueControls({
+  disabled,
+  files,
+  maxFiles,
+  onFilesChange,
+  onHistoryReset,
+  onQueueChange,
+  onSend,
+  onValueChange,
+  queue,
+  status,
+  supportsFiles,
+  textareaRef,
+  value,
+}: QueueControlsOptions) {
+  const queueItems = useMemo(() => queue ?? [], [queue]);
+  const queueRef = useRef(queueItems);
+  useEffect(() => {
+    queueRef.current = queueItems;
+  }, [queueItems]);
+
+  const supportsQueue = status !== undefined && onQueueChange !== undefined;
+  const streaming = status === "streaming";
+  const trimmed = value.trim();
+  const canSend = !disabled && (trimmed.length > 0 || files.length > 0);
+  const handleSend = useCallback(() => {
+    if (!canSend) return;
+    onHistoryReset();
+    if (streaming && supportsQueue) {
+      const item: QueuedMessage = {
+        id: crypto.randomUUID(),
+        text: trimmed,
+        files,
+      };
+      const next = [...queueRef.current, item];
+      queueRef.current = next;
+      onQueueChange?.(next);
+      onValueChange("");
+      if (supportsFiles) onFilesChange?.([]);
+      requestAnimationFrame(() => textareaRef.current?.focus());
+      return;
+    }
+    onSend?.(trimmed, files);
+  }, [
+    canSend,
+    files,
+    onFilesChange,
+    onHistoryReset,
+    onQueueChange,
+    onSend,
+    onValueChange,
+    streaming,
+    supportsFiles,
+    supportsQueue,
+    textareaRef,
+    trimmed,
+  ]);
+  const editQueued = useCallback(
+    (item: QueuedMessage) => {
+      if (!supportsQueue) return;
+      onHistoryReset();
+      onValueChange(item.text);
+      if (supportsFiles) {
+        onFilesChange?.(
+          maxFiles == null ? item.files : item.files.slice(0, maxFiles)
+        );
+      }
+      const next = queueRef.current.filter(
+        (queuedItem) => queuedItem.id !== item.id
+      );
+      queueRef.current = next;
+      onQueueChange?.(next);
+      requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.focus();
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      });
+    },
+    [
+      maxFiles,
+      onFilesChange,
+      onHistoryReset,
+      onQueueChange,
+      onValueChange,
+      supportsFiles,
+      supportsQueue,
+      textareaRef,
+    ]
+  );
+  const removeQueued = useCallback(
+    (item: QueuedMessage) => {
+      const next = queueRef.current.filter(
+        (queuedItem) => queuedItem.id !== item.id
+      );
+      queueRef.current = next;
+      onQueueChange?.(next);
+    },
+    [onQueueChange]
+  );
+  const moveQueued = useCallback(
+    (item: QueuedMessage, direction: -1 | 1) => {
+      const current = queueRef.current;
+      const from = current.findIndex(
+        (queuedItem) => queuedItem.id === item.id
+      );
+      const to = from + direction;
+      if (from < 0 || to < 0 || to >= current.length) return;
+      const next = [...current];
+      [next[from], next[to]] = [next[to], next[from]];
+      queueRef.current = next;
+      onQueueChange?.(next);
+    },
+    [onQueueChange]
+  );
+
+  return {
+    canSend,
+    editQueued,
+    handleSend,
+    moveQueued,
+    queueItems,
+    removeQueued,
+    streaming,
+    supportsQueue,
+  };
+}
+
+type ButtonMode = "send" | "queue" | "stop";
+
+interface InputMessageViewProps {
+  accept: string;
+  buttonLabel: string;
+  buttonMode: ButtonMode;
+  canSend: boolean;
+  className?: string;
+  clickToFocus: boolean;
+  composerProps: HTMLAttributes<HTMLDivElement>;
+  disabled?: boolean;
+  dragOver: boolean;
+  edgeShadow?: string;
+  fileInputRef: RefObject<HTMLInputElement | null>;
+  filePreviewSize: number;
+  files: File[];
+  forwardedRef: ForwardedRef<HTMLDivElement>;
+  handleContainerMouseDown: (event: React.MouseEvent<HTMLDivElement>) => void;
+  handleDragLeave: (event: ReactDragEvent<HTMLDivElement>) => void;
+  handleDragOver: (event: ReactDragEvent<HTMLDivElement>) => void;
+  handleDrop: (event: ReactDragEvent<HTMLDivElement>) => void;
+  handleFileInputChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  handleKeyDown: (event: ReactKeyboardEvent<HTMLTextAreaElement>) => void;
+  handleSend: () => void;
+  handleStop: () => void;
+  isTouch: boolean;
+  leftContent?: ReactNode;
+  maxFiles?: number;
+  minRows: number;
+  onFilesRemove: (index: number) => void;
+  onHoverChange: (hovered: boolean) => void;
+  onQueueChange?: (queue: QueuedMessage[]) => void;
+  onQueueEdit: (item: QueuedMessage) => void;
+  onQueueMove: (item: QueuedMessage, direction: -1 | 1) => void;
+  onQueueRemove: (item: QueuedMessage) => void;
+  onValueChange: (value: string) => void;
+  placeholder: string;
+  queue: QueuedMessage[];
+  reduceMotion: boolean;
+  restTextareaProps: TextareaHTMLAttributes<HTMLTextAreaElement>;
+  rightContent?: ReactNode;
+  setFocusVisible: (visible: boolean) => void;
+  setHistoryIndex: (index: number | null) => void;
+  showQueue: boolean;
+  style?: CSSProperties;
+  supportsFiles: boolean;
+  supportsQueue: boolean;
+  textareaProps?: InputMessageProps["textareaProps"];
+  textareaRef: RefObject<HTMLTextAreaElement | null>;
+  value: string;
+}
+
+function InputMessageView({
+  accept,
+  buttonLabel,
+  buttonMode,
+  canSend,
+  className,
+  clickToFocus,
+  composerProps,
+  disabled,
+  dragOver,
+  edgeShadow,
+  fileInputRef,
+  filePreviewSize,
+  files,
+  forwardedRef,
+  handleContainerMouseDown,
+  handleDragLeave,
+  handleDragOver,
+  handleDrop,
+  handleFileInputChange,
+  handleKeyDown,
+  handleSend,
+  handleStop,
+  isTouch,
+  leftContent,
+  maxFiles,
+  minRows,
+  onFilesRemove,
+  onHoverChange,
+  onQueueChange,
+  onQueueEdit,
+  onQueueMove,
+  onQueueRemove,
+  onValueChange,
+  placeholder,
+  queue,
+  reduceMotion,
+  restTextareaProps,
+  rightContent,
+  setFocusVisible,
+  setHistoryIndex,
+  showQueue,
+  style,
+  supportsFiles,
+  supportsQueue,
+  textareaProps,
+  textareaRef,
+  value,
+}: InputMessageViewProps) {
+  const shape = useShape();
+  const ArrowUpIcon = useIcon("arrow-up");
+
+  return (
+    <LazyMotion features={domAnimation}>
+      <div
+        ref={forwardedRef}
+        role="group"
+        aria-label="Message composer"
+        onMouseDown={handleContainerMouseDown}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className={cn(
+          "flex flex-col gap-1 p-2 transition-[box-shadow,color] duration-80",
+          surfaceClasses(2, 2),
+          shape.container,
+          clickToFocus && !disabled && "cursor-text",
+          disabled && "opacity-50 pointer-events-none",
+          className
+        )}
+        style={edgeShadow ? { boxShadow: edgeShadow, ...style } : style}
+        onMouseEnter={() => onHoverChange(true)}
+        onMouseLeave={() => onHoverChange(false)}
+        {...composerProps}
+      >
+        <SurfaceProvider value={2}>
+          {supportsFiles && (
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={accept}
+              multiple={maxFiles == null || maxFiles > 1}
+              className="hidden"
+              onChange={handleFileInputChange}
+              aria-hidden="true"
+              tabIndex={-1}
+            />
+          )}
+          <AnimatePresence initial={false}>
+            {files.length > 0 && (
+              <m.div
+                key="preview-row"
+                layout
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ ...spring.moderate, bounce: 0 }}
+                className="overflow-hidden"
+              >
+                <div className="flex flex-wrap gap-2 pb-1">
+                  <AnimatePresence initial={false} mode="popLayout">
+                    {files.map((file, index) => (
+                      <FilePreviewTile
+                        key={`${file.name}-${file.size}-${file.lastModified}`}
+                        file={file}
+                        onRemove={() => onFilesRemove(index)}
+                        size={filePreviewSize}
+                      />
+                    ))}
+                  </AnimatePresence>
+                </div>
+              </m.div>
+            )}
+          </AnimatePresence>
+          <AnimatePresence initial={false}>
+            {supportsQueue && showQueue && queue.length > 0 && (
+              <m.div
+                key="queue-row"
+                layout
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ ...spring.moderate, bounce: 0 }}
+                className="overflow-hidden"
+              >
+                <Reorder.Group
+                  axis="y"
+                  values={queue}
+                  onReorder={(next) => onQueueChange?.(next)}
+                  data-im-queue
+                  className="flex flex-col gap-1 pb-1"
+                >
+                  <AnimatePresence initial={false}>
+                    {queue.map((item, index) => (
+                      <QueuedRow
+                        key={item.id}
+                        item={item}
+                        index={index}
+                        total={queue.length}
+                        reduceMotion={reduceMotion}
+                        isTouch={isTouch}
+                        onEdit={onQueueEdit}
+                        onRemove={onQueueRemove}
+                        onMove={onQueueMove}
+                      />
+                    ))}
+                  </AnimatePresence>
+                </Reorder.Group>
+              </m.div>
+            )}
+          </AnimatePresence>
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={(event) => {
+              setHistoryIndex(null);
+              onValueChange(event.target.value);
+            }}
+            onKeyDown={handleKeyDown}
+            onFocus={(event) => {
+              if (event.target.matches(":focus-visible")) setFocusVisible(true);
+              textareaProps?.onFocus?.(event);
+            }}
+            onBlur={(event) => {
+              setFocusVisible(false);
+              textareaProps?.onBlur?.(event);
+            }}
+            placeholder={
+              dragOver && supportsFiles
+                ? "Drop files here to add to chat"
+                : placeholder
+            }
+            disabled={disabled}
+            rows={minRows}
+            aria-label={textareaProps?.["aria-label"] ?? "Message"}
+            className={cn(
+              "w-full resize-none bg-transparent outline-none",
+              "text-[14px] leading-5 text-foreground placeholder:text-muted-foreground",
+              "px-2 py-2"
+            )}
+            style={{ fontVariationSettings: fontWeights.normal }}
+            {...restTextareaProps}
+          />
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 min-w-0">{leftContent}</div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {rightContent}
+              <Button
+                type="button"
+                variant="primary"
+                size="icon-sm"
+                onClick={buttonMode === "stop" ? handleStop : handleSend}
+                disabled={buttonMode === "stop" ? disabled : !canSend}
+                aria-label={buttonLabel}
+              >
+                <AnimatePresence mode="wait" initial={false}>
+                  <m.span
+                    key={buttonMode === "stop" ? "stop" : "arrow"}
+                    initial={
+                      reduceMotion
+                        ? { opacity: 0 }
+                        : { opacity: 0, scale: 0.6 }
+                    }
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={
+                      reduceMotion
+                        ? { opacity: 0 }
+                        : {
+                            opacity: 0,
+                            scale: 0.6,
+                            transition: spring.fast.exit,
+                          }
+                    }
+                    transition={spring.fast}
+                    className="flex items-center justify-center leading-none"
+                  >
+                    {buttonMode === "stop" ? (
+                      <span className="h-3 w-3 rounded-[3px] bg-current" />
+                    ) : (
+                      <ArrowUpIcon
+                        size={19}
+                        className="block !h-[19px] !w-[19px]"
+                      />
+                    )}
+                  </m.span>
+                </AnimatePresence>
+              </Button>
+            </div>
+          </div>
+        </SurfaceProvider>
+      </div>
+    </LazyMotion>
+  );
+}
+
 // ─── InputMessage ─────────────────────────────────────────────────────────
 
 const InputMessage = forwardRef<HTMLDivElement, InputMessageProps>(
@@ -329,22 +904,18 @@ const InputMessage = forwardRef<HTMLDivElement, InputMessageProps>(
       queue,
       onQueueChange,
       showQueue = true,
-      history = [],
+      history = EMPTY_HISTORY,
       className,
       style,
       ...props
     },
     ref
   ) => {
-    const shape = useShape();
-    const ArrowUpIcon = useIcon("arrow-up");
     const reduceMotion = useReducedMotion() ?? false;
     const isTouch = useIsTouch();
 
     const textareaRef = useRef<HTMLTextAreaElement>(null);
-    const fileInputRef = useRef<HTMLInputElement>(null);
     const [focusVisible, setFocusVisible] = useState(false);
-    const [dragOver, setDragOver] = useState(false);
     const [hovered, setHovered] = useState(false);
 
     // Split out onFocus/onBlur so the rest-spread onto the textarea can't
@@ -356,25 +927,56 @@ const InputMessage = forwardRef<HTMLDivElement, InputMessageProps>(
     } = textareaProps ?? {};
 
     const filesArr = useMemo(() => files ?? [], [files]);
-    const supportsFiles = onFilesChange !== undefined;
-
-    // Queue is active only when both the status is controlled and a change
-    // handler is wired — same opt-in shape as `supportsFiles`.
-    const queueArr = useMemo(() => queue ?? [], [queue]);
-    // Always-current view of the queue, so enqueue/edit/remove/move read the
-    // latest value even if a handler closure is stale (e.g. two submits land
-    // before the controlled `queue` prop round-trips back).
-    const queueRef = useRef(queueArr);
-    queueRef.current = queueArr;
-    const supportsQueue = status !== undefined && onQueueChange !== undefined;
-    const streaming = status === "streaming";
-    const [liveMsg, setLiveMsg] = useState("");
+    const {
+      dragOver,
+      fileInputRef,
+      handleDragLeave,
+      handleDragOver,
+      handleDrop,
+      handleFileInputChange,
+      leftContent,
+      removeFile,
+      rightContent,
+      supportsFiles,
+    } = useFileControls({
+      accept,
+      disabled,
+      files: filesArr,
+      leftSlot,
+      maxFiles,
+      onFilesChange,
+      rightSlot,
+    });
 
     // Sent-message history navigation (readline-style). `historyIndex` is null
     // when not browsing; `draftBeforeHistory` stashes the in-progress text so
     // ArrowDown past the newest entry restores it.
     const [historyIndex, setHistoryIndex] = useState<number | null>(null);
     const draftBeforeHistory = useRef("");
+    const {
+      canSend,
+      editQueued,
+      handleSend,
+      moveQueued,
+      queueItems: queueArr,
+      removeQueued,
+      streaming,
+      supportsQueue,
+    } = useQueueControls({
+      disabled,
+      files: filesArr,
+      maxFiles,
+      onFilesChange,
+      onHistoryReset: () => setHistoryIndex(null),
+      onQueueChange,
+      onSend,
+      onValueChange,
+      queue,
+      status,
+      supportsFiles,
+      textareaRef,
+      value,
+    });
 
     // Parsed line-height, cached per textarea element — getComputedStyle on
     // every keystroke is needless work when the value only changes with font
@@ -398,9 +1000,6 @@ const InputMessage = forwardRef<HTMLDivElement, InputMessageProps>(
       el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
     }, [value, minRows, maxRows]);
 
-    const trimmed = value.trim();
-    const canSend = !disabled && (trimmed.length > 0 || filesArr.length > 0);
-
     // Edge = the box-shadow's 1px ring, recoloured in place per state so the
     // stroke gains contrast without ever appearing to thicken (no second
     // border band layered beside it). The drop (`0 1px 1px`) is kept so the
@@ -417,108 +1016,7 @@ const InputMessage = forwardRef<HTMLDivElement, InputMessageProps>(
           ? `0 0 0 1px var(--border), ${EDGE_DROP}`
           : undefined;
 
-    const handleSend = useCallback(() => {
-      if (!canSend) return;
-      setHistoryIndex(null);
-      // While the assistant is streaming, a submit enqueues instead of sending:
-      // snapshot the draft (text + currently-attached files) into a queue item,
-      // then clear the composer and keep focus.
-      if (streaming && supportsQueue) {
-        const item: QueuedMessage = {
-          id: crypto.randomUUID(),
-          text: trimmed,
-          files: filesArr,
-        };
-        onQueueChange?.([...queueRef.current, item]);
-        onValueChange("");
-        if (supportsFiles) onFilesChange?.([]);
-        requestAnimationFrame(() => textareaRef.current?.focus());
-        return;
-      }
-      onSend?.(trimmed, filesArr);
-    }, [
-      canSend,
-      streaming,
-      supportsQueue,
-      onSend,
-      trimmed,
-      filesArr,
-      onQueueChange,
-      onValueChange,
-      supportsFiles,
-      onFilesChange,
-    ]);
-
     const handleStop = useCallback(() => onStop?.(), [onStop]);
-
-    // Auto-dispatch: on the streaming → idle edge (whether the response
-    // finished on its own or the user pressed Stop), fire the head of the
-    // queue and drop it. The consumer is expected to set status back to
-    // "streaming" inside onSend, which re-arms this for the next item.
-    const prevStatusRef = useRef(status);
-    useEffect(() => {
-      const prev = prevStatusRef.current;
-      prevStatusRef.current = status;
-      if (!supportsQueue) return;
-      if (prev === "streaming" && status === "idle" && queueArr.length > 0) {
-        const [next, ...rest] = queueArr;
-        onQueueChange?.(rest);
-        onSend?.(next.text, next.files, { queuedId: next.id });
-        setLiveMsg(
-          `Message sent.${rest.length ? ` ${rest.length} still queued.` : ""}`
-        );
-      }
-    }, [status, supportsQueue, queueArr, onQueueChange, onSend]);
-
-    // ── Queue item actions ────────────────────────────────────────────
-    const editQueued = useCallback(
-      (item: QueuedMessage) => {
-        if (!supportsQueue) return;
-        // Silent replace: pull the item out of the queue into the composer,
-        // overwriting any current draft. Re-sending re-queues it to the end.
-        setHistoryIndex(null);
-        onValueChange(item.text);
-        if (supportsFiles) {
-          onFilesChange?.(
-            maxFiles != null ? item.files.slice(0, maxFiles) : item.files
-          );
-        }
-        onQueueChange?.(queueRef.current.filter((q) => q.id !== item.id));
-        requestAnimationFrame(() => {
-          const el = textareaRef.current;
-          if (!el) return;
-          el.focus();
-          el.setSelectionRange(el.value.length, el.value.length);
-        });
-      },
-      [
-        supportsQueue,
-        supportsFiles,
-        onValueChange,
-        onFilesChange,
-        maxFiles,
-        onQueueChange,
-      ]
-    );
-
-    const removeQueued = useCallback(
-      (item: QueuedMessage) =>
-        onQueueChange?.(queueRef.current.filter((q) => q.id !== item.id)),
-      [onQueueChange]
-    );
-
-    const moveQueued = useCallback(
-      (item: QueuedMessage, dir: -1 | 1) => {
-        const cur = queueRef.current;
-        const i = cur.findIndex((q) => q.id === item.id);
-        const j = i + dir;
-        if (i < 0 || j < 0 || j >= cur.length) return;
-        const next = [...cur];
-        [next[i], next[j]] = [next[j], next[i]];
-        onQueueChange?.(next);
-      },
-      [onQueueChange]
-    );
 
     // Send button morph: Stop (streaming + empty draft) → Queue (streaming +
     // draft) → Send (idle). Send and Queue share the arrow-up glyph; only the
@@ -619,329 +1117,56 @@ const InputMessage = forwardRef<HTMLDivElement, InputMessageProps>(
       [clickToFocus, disabled]
     );
 
-    // ── File helpers ──────────────────────────────────────────────────
-    const acceptTokens = useMemo(
-      () => accept.split(",").map((s) => s.trim()).filter(Boolean),
-      [accept]
-    );
-
-    const matchesAccept = useCallback(
-      (file: File) =>
-        acceptTokens.some((token) => {
-          if (token.endsWith("/*")) return file.type.startsWith(token.slice(0, -1));
-          if (token.startsWith(".")) return file.name.toLowerCase().endsWith(token.toLowerCase());
-          return file.type === token;
-        }),
-      [acceptTokens]
-    );
-
-    const addFiles = useCallback(
-      (incoming: File[]) => {
-        if (!onFilesChange) return;
-        // Identity key for dedup: name + size + lastModified is unique enough
-        // to catch "user dropped the same file twice" without false positives
-        // on legitimately distinct files (different bytes ⇒ different size).
-        const fingerprint = (f: File) => `${f.name}-${f.size}-${f.lastModified}`;
-        const existing = new Set(filesArr.map(fingerprint));
-        const accepted: File[] = [];
-        for (const f of incoming) {
-          if (!matchesAccept(f)) continue;
-          const fp = fingerprint(f);
-          if (existing.has(fp)) continue;
-          existing.add(fp);
-          accepted.push(f);
-        }
-        if (!accepted.length) return;
-        const next = [...filesArr, ...accepted];
-        onFilesChange(maxFiles != null ? next.slice(0, maxFiles) : next);
-      },
-      [onFilesChange, filesArr, matchesAccept, maxFiles]
-    );
-
-    const removeFile = useCallback(
-      (idx: number) => {
-        if (!onFilesChange) return;
-        onFilesChange(filesArr.filter((_, i) => i !== idx));
-      },
-      [onFilesChange, filesArr]
-    );
-
-    const openFilePicker = useCallback(
-      (overrideAccept?: string) => {
-        const el = fileInputRef.current;
-        if (!el) return;
-        // Temporarily narrow `accept` for this invocation (e.g. "image/*").
-        // Reset after the click so subsequent native invocations still honor
-        // the component-level accept.
-        if (overrideAccept) {
-          el.accept = overrideAccept;
-          el.click();
-          // Restore on next tick — the picker dialog reads `accept` synchronously.
-          queueMicrotask(() => {
-            if (fileInputRef.current) fileInputRef.current.accept = accept;
-          });
-          return;
-        }
-        el.click();
-      },
-      [accept]
-    );
-
-    // ── Slot rendering ────────────────────────────────────────────────
-    const slotCtx = useMemo<InputMessageSlotContext>(
-      () => ({ openFilePicker, files: filesArr }),
-      [openFilePicker, filesArr]
-    );
-    const leftContent =
-      typeof leftSlot === "function" ? leftSlot(slotCtx) : leftSlot;
-    const rightContent =
-      typeof rightSlot === "function" ? rightSlot(slotCtx) : rightSlot;
-
-    // ── Drag-and-drop ────────────────────────────────────────────────
-    const handleDragOver = useCallback(
-      (e: ReactDragEvent<HTMLDivElement>) => {
-        if (!supportsFiles || disabled) return;
-        // Only treat as a file drag — text/HTML drags shouldn't trigger.
-        if (!Array.from(e.dataTransfer.types).includes("Files")) return;
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "copy";
-        setDragOver(true);
-      },
-      [supportsFiles, disabled]
-    );
-
-    const handleDragLeave = useCallback(
-      (e: ReactDragEvent<HTMLDivElement>) => {
-        const wrapper = e.currentTarget;
-        const next = e.relatedTarget as Node | null;
-        if (next && wrapper.contains(next)) return;
-        setDragOver(false);
-      },
-      []
-    );
-
-    const handleDrop = useCallback(
-      (e: ReactDragEvent<HTMLDivElement>) => {
-        e.preventDefault();
-        setDragOver(false);
-        if (!supportsFiles || disabled) return;
-        addFiles(Array.from(e.dataTransfer.files));
-      },
-      [supportsFiles, disabled, addFiles]
-    );
-
-    const handleFileInputChange = useCallback(
-      (e: ChangeEvent<HTMLInputElement>) => {
-        if (!e.target.files) return;
-        addFiles(Array.from(e.target.files));
-        e.target.value = ""; // Allow re-selecting the same file.
-      },
-      [addFiles]
-    );
-
     return (
-      <div
-        ref={ref}
-        onMouseDown={handleContainerMouseDown}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-        className={cn(
-          // The edge is the box-shadow's hairline ring (from surface-2), not a
-          // border. State changes recolor that same 1px ring in place rather
-          // than layering a second colored border beside it — so hover / focus
-          // bump *contrast* without ever appearing to thicken the stroke.
-          "flex flex-col gap-1 p-2 transition-[box-shadow,color] duration-80",
-          surfaceClasses(2, 2),
-          shape.container,
-          clickToFocus && !disabled && "cursor-text",
-          disabled && "opacity-50 pointer-events-none",
-          className
-        )}
-        style={edgeShadow ? { boxShadow: edgeShadow, ...style } : style}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        {...props}
-      >
-        <SurfaceProvider value={2}>
-          {supportsFiles && (
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept={accept}
-              multiple={maxFiles == null || maxFiles > 1}
-              className="hidden"
-              onChange={handleFileInputChange}
-              aria-hidden="true"
-              tabIndex={-1}
-            />
-          )}
-
-          {/* Attached files preview row — sits above the textarea.
-              The outer motion.div animates the row's height (collapsing the
-              whole component height) when files appear / disappear.
-              The inner `mode="popLayout"` AnimatePresence pulls a removing
-              tile out of layout flow so siblings can slide into the gap
-              without fighting its exit anim. Keys are purely file-identity
-              (no index) so removing the first file doesn't re-key — and
-              remount — every surviving sibling. */}
-          <AnimatePresence initial={false}>
-            {filesArr.length > 0 && (
-              <motion.div
-                key="preview-row"
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: "auto", opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ ...spring.moderate, bounce: 0 }}
-                className="overflow-hidden"
-              >
-                <div className="flex flex-wrap gap-2 pb-1">
-                  <AnimatePresence initial={false} mode="popLayout">
-                    {filesArr.map((file, i) => (
-                      <FilePreviewTile
-                        key={`${file.name}-${file.size}-${file.lastModified}`}
-                        file={file}
-                        onRemove={() => removeFile(i)}
-                        size={filePreviewSize}
-                      />
-                    ))}
-                  </AnimatePresence>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {/* Queued messages — reorderable rows above the textarea. The outer
-              motion.div collapses the region height when the queue empties;
-              the Reorder.Group handles drag-reorder (top = next to dispatch)
-              and AnimatePresence handles per-row enter/exit. */}
-          {supportsQueue && showQueue && (
-            <AnimatePresence initial={false}>
-              {queueArr.length > 0 && (
-                <motion.div
-                  key="queue-row"
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: "auto", opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  transition={{ ...spring.moderate, bounce: 0 }}
-                  className="overflow-hidden"
-                >
-                  <Reorder.Group
-                    axis="y"
-                    values={queueArr}
-                    onReorder={(next) => onQueueChange?.(next)}
-                    data-im-queue
-                    className="flex flex-col gap-1 pb-1"
-                  >
-                    <AnimatePresence initial={false}>
-                      {queueArr.map((item, i) => (
-                        <QueuedRow
-                          key={item.id}
-                          item={item}
-                          index={i}
-                          total={queueArr.length}
-                          reduceMotion={reduceMotion}
-                          isTouch={isTouch}
-                          onEdit={editQueued}
-                          onRemove={removeQueued}
-                          onMove={moveQueued}
-                        />
-                      ))}
-                    </AnimatePresence>
-                  </Reorder.Group>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          )}
-
-          <textarea
-            ref={textareaRef}
-            value={value}
-            onChange={(e) => {
-              // Real typing exits history mode (recall sets the value
-              // programmatically, which doesn't fire onChange).
-              setHistoryIndex(null);
-              onValueChange(e.target.value);
-            }}
-            onKeyDown={handleKeyDown}
-            // Compose the consumer's textareaProps handlers with the internal
-            // focus-visible tracking (the spread below would otherwise
-            // overwrite these).
-            onFocus={(e) => {
-              if (e.target.matches(":focus-visible")) setFocusVisible(true);
-              textareaProps?.onFocus?.(e);
-            }}
-            onBlur={(e) => {
-              setFocusVisible(false);
-              textareaProps?.onBlur?.(e);
-            }}
-            placeholder={
-              dragOver && supportsFiles
-                ? "Drop files here to add to chat"
-                : placeholder
-            }
-            disabled={disabled}
-            rows={minRows}
-            aria-label={textareaProps?.["aria-label"] ?? "Message"}
-            className={cn(
-              "w-full resize-none bg-transparent outline-none",
-              "text-[14px] leading-5 text-foreground placeholder:text-muted-foreground",
-              "px-2 py-2"
-            )}
-            style={{ fontVariationSettings: fontWeights.normal }}
-            {...restTextareaProps}
-          />
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-1.5 min-w-0">{leftContent}</div>
-            <div className="flex items-center gap-1.5 shrink-0">
-              {rightContent}
-              <Button
-                type="button"
-                variant="primary"
-                size="icon-sm"
-                onClick={buttonMode === "stop" ? handleStop : handleSend}
-                disabled={buttonMode === "stop" ? disabled : !canSend}
-                aria-label={buttonLabel}
-              >
-                <AnimatePresence mode="wait" initial={false}>
-                  <motion.span
-                    key={buttonMode === "stop" ? "stop" : "arrow"}
-                    initial={
-                      reduceMotion
-                        ? { opacity: 0 }
-                        : { opacity: 0, scale: 0.6 }
-                    }
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={
-                      reduceMotion
-                        ? { opacity: 0 }
-                        : { opacity: 0, scale: 0.6, transition: spring.fast.exit }
-                    }
-                    transition={spring.fast}
-                    className="flex items-center justify-center leading-none"
-                  >
-                    {buttonMode === "stop" ? (
-                      <span className="h-3 w-3 rounded-[3px] bg-current" />
-                    ) : (
-                      // Override icon-sm's small 14px svg — the send glyph reads
-                      // better a touch larger. `size` matches the attribute to
-                      // the CSS so the svg box stays centered.
-                      <ArrowUpIcon
-                        size={19}
-                        className="block !h-[19px] !w-[19px]"
-                      />
-                    )}
-                  </motion.span>
-                </AnimatePresence>
-              </Button>
-            </div>
-          </div>
-          {/* Politely announces auto-dispatch of queued messages. */}
-          <span className="sr-only" role="status" aria-live="polite">
-            {liveMsg}
-          </span>
-        </SurfaceProvider>
-      </div>
+      <InputMessageView
+        accept={accept}
+        buttonLabel={buttonLabel}
+        buttonMode={buttonMode}
+        canSend={canSend}
+        className={className}
+        clickToFocus={clickToFocus}
+        composerProps={props}
+        disabled={disabled}
+        dragOver={dragOver}
+        edgeShadow={edgeShadow}
+        fileInputRef={fileInputRef}
+        filePreviewSize={filePreviewSize}
+        files={filesArr}
+        forwardedRef={ref}
+        handleContainerMouseDown={handleContainerMouseDown}
+        handleDragLeave={handleDragLeave}
+        handleDragOver={handleDragOver}
+        handleDrop={handleDrop}
+        handleFileInputChange={handleFileInputChange}
+        handleKeyDown={handleKeyDown}
+        handleSend={handleSend}
+        handleStop={handleStop}
+        isTouch={isTouch}
+        leftContent={leftContent}
+        maxFiles={maxFiles}
+        minRows={minRows}
+        onFilesRemove={removeFile}
+        onHoverChange={setHovered}
+        onQueueChange={onQueueChange}
+        onQueueEdit={editQueued}
+        onQueueMove={moveQueued}
+        onQueueRemove={removeQueued}
+        onValueChange={onValueChange}
+        placeholder={placeholder}
+        queue={queueArr}
+        reduceMotion={reduceMotion}
+        restTextareaProps={restTextareaProps}
+        rightContent={rightContent}
+        setFocusVisible={setFocusVisible}
+        setHistoryIndex={setHistoryIndex}
+        showQueue={showQueue}
+        style={style}
+        supportsFiles={supportsFiles}
+        supportsQueue={supportsQueue}
+        textareaProps={textareaProps}
+        textareaRef={textareaRef}
+        value={value}
+      />
     );
   }
 );
