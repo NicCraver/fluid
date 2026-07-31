@@ -175,7 +175,7 @@ export function QueuedMessageStack({
                   }}
                   aria-label="Collapse queued messages"
                   className={cn(
-                    "absolute bottom-0 left-0 flex items-center justify-center text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-[color:var(--focus-ring,#6B97FF)]",
+                    "absolute bottom-0 left-0 flex items-center justify-center text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-(--focus-ring,#6B97FF)",
                     shape.button
                   )}
                   style={{ height: CARD_H, width: 40 }}
@@ -305,7 +305,7 @@ export function QueuedMessageStack({
                           }}
                           aria-label={`Edit queued message: ${item.text}`}
                           className={cn(
-                            "flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center text-muted-foreground outline-none hover:bg-hover hover:text-foreground focus-visible:ring-1 focus-visible:ring-[color:var(--focus-ring,#6B97FF)]",
+                            "flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center text-muted-foreground outline-none hover:bg-hover hover:text-foreground focus-visible:ring-1 focus-visible:ring-(--focus-ring,#6B97FF)",
                             shape.button
                           )}
                         >
@@ -322,7 +322,7 @@ export function QueuedMessageStack({
                           }}
                           aria-label={`Remove queued message: ${item.text}`}
                           className={cn(
-                            "flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center text-muted-foreground outline-none hover:bg-hover hover:text-foreground focus-visible:ring-1 focus-visible:ring-[color:var(--focus-ring,#6B97FF)]",
+                            "flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center text-muted-foreground outline-none hover:bg-hover hover:text-foreground focus-visible:ring-1 focus-visible:ring-(--focus-ring,#6B97FF)",
                             shape.button
                           )}
                         >
