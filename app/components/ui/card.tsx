@@ -15,7 +15,13 @@ import {
   type ReactNode,
 } from "react";
 import { Link as RouterLink } from "react-router";
-import { motion, AnimatePresence } from "framer-motion";
+import { AnimatePresence, LazyMotion, domAnimation, m } from "framer-motion";
+import { useProximityHover } from "~/hooks/use-proximity-hover";
+import { fontWeights } from "~/lib/font-weight";
+import { useIcon, type IconComponent } from "~/lib/icon-context";
+import { useShape } from "~/lib/shape-context";
+import { spring } from "~/lib/springs";
+import { cn } from "~/lib/utils";
 
 function Link({
   href,
@@ -36,12 +42,6 @@ function Link({
     </RouterLink>
   );
 }
-import { cn } from "~/lib/utils";
-import { spring } from "~/lib/springs";
-import { fontWeights } from "~/lib/font-weight";
-import { useShape } from "~/lib/shape-context";
-import { useIcon, type IconComponent } from "~/lib/icon-context";
-import { useProximityHover } from "~/hooks/use-proximity-hover";
 
 // ---------------------------------------------------------------------------
 // Card is shadcn/ui's compositional card — the same parts and `data-slot`
@@ -203,7 +203,8 @@ const CardGroup = forwardRef<HTMLDivElement, CardGroupProps>(
       proximityHover && activeIndex !== null ? itemRects[activeIndex] : null;
 
     return (
-      <CardGroupContext.Provider value={contextValue}>
+      <LazyMotion features={domAnimation}>
+        <CardGroupContext.Provider value={contextValue}>
         <div
           ref={(node) => {
             (containerRef as React.MutableRefObject<HTMLDivElement | null>).current =
@@ -234,24 +235,19 @@ const CardGroup = forwardRef<HTMLDivElement, CardGroupProps>(
               card nearest the cursor, previewing where a click will land. */}
           <AnimatePresence>
             {activeRect && (
-              <motion.div
+              <m.div
                 key={sessionRef.current}
                 aria-hidden
                 className={cn("absolute bg-hover pointer-events-none z-0", shape.container)}
-                initial={{
-                  opacity: 0,
+                layout
+                style={{
                   top: activeRect.top,
                   left: activeRect.left,
                   width: activeRect.width,
                   height: activeRect.height,
                 }}
-                animate={{
-                  opacity: 1,
-                  top: activeRect.top,
-                  left: activeRect.left,
-                  width: activeRect.width,
-                  height: activeRect.height,
-                }}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
                 exit={{ opacity: 0, transition: spring.fast.exit }}
                 transition={{ ...spring.fast, opacity: { duration: 0.08 } }}
               />
@@ -260,7 +256,8 @@ const CardGroup = forwardRef<HTMLDivElement, CardGroupProps>(
 
           {indexed}
         </div>
-      </CardGroupContext.Provider>
+        </CardGroupContext.Provider>
+      </LazyMotion>
     );
   }
 );
@@ -286,6 +283,14 @@ interface CardProps extends Omit<HTMLAttributes<HTMLDivElement>, "onClick"> {
   onDismiss?: () => void;
   /** Injected by CardGroup — do not set by hand. */
   index?: number;
+}
+
+function isCardImage(child: ReactNode) {
+  return (
+    isValidElement(child) &&
+    (child.type === CardImage ||
+      (child.type as { displayName?: string })?.displayName === "CardImage")
+  );
 }
 
 const Card = forwardRef<HTMLDivElement, CardProps>(
@@ -354,10 +359,6 @@ const Card = forwardRef<HTMLDivElement, CardProps>(
     // the text (see the body wrapper below + CardHeader/CardFooter). Match the
     // image child by identity OR displayName so detection and the split below
     // agree even when module identity drifts (e.g. HMR duplication).
-    const isCardImage = (child: ReactNode) =>
-      isValidElement(child) &&
-      (child.type === CardImage ||
-        (child.type as { displayName?: string })?.displayName === "CardImage");
     const hasImage = Children.toArray(children).some(isCardImage);
     const inlineImage = isInline && hasImage;
     const clickable = !!href || !!onClick;
@@ -701,15 +702,25 @@ function CardMedia({ logo, logoAlt, icon: Icon, size = 22, className }: CardMedi
   const wrap = cn(orientation === "inline" ? "" : "mb-2", className);
 
   if (logo) {
-    const logos = Array.isArray(logo) ? logo : [logo];
+    const logos = Array.isArray(logo)
+      ? [
+          { position: "primary", src: logo[0] },
+          { position: "secondary", src: logo[1] },
+        ]
+      : [{ position: "primary", src: logo }];
     return (
       <span
         data-slot="card-media"
         className={cn("inline-flex items-center gap-1.5 shrink-0", wrap)}
       >
-        {logos.map((src, i) => (
-          <span key={i} className="inline-flex items-center gap-1.5">
-            {i > 0 && <span aria-hidden className="w-2 h-px bg-border" />}
+        {logos.map(({ position, src }) => (
+          <span
+            key={`${position}-${src}`}
+            className="inline-flex items-center gap-1.5"
+          >
+            {position === "secondary" && (
+              <span aria-hidden className="w-2 h-px bg-border" />
+            )}
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={src}
