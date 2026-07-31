@@ -23,8 +23,7 @@ async function loadPdfjs(): Promise<PdfjsModule> {
 }
 
 async function renderPdfFirstPage(file: File, targetWidth: number): Promise<string> {
-  const pdfjs = await loadPdfjs();
-  const buffer = await file.arrayBuffer();
+  const [pdfjs, buffer] = await Promise.all([loadPdfjs(), file.arrayBuffer()]);
   const pdf = await pdfjs.getDocument({ data: buffer }).promise;
   const page = await pdf.getPage(1);
   const baseViewport = page.getViewport({ scale: 1 });

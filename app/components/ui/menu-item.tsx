@@ -11,7 +11,12 @@ import {
   type ReactNode,
 } from "react";
 import type { IconComponent } from "~/lib/icon-context";
-import { motion, AnimatePresence } from "framer-motion";
+import {
+  AnimatePresence,
+  LazyMotion,
+  domAnimation,
+  m,
+} from "framer-motion";
 import { cn } from "~/lib/utils";
 import { fontWeights } from "~/lib/font-weight";
 import { shapeMap } from "~/lib/shape-context";
@@ -70,7 +75,7 @@ export function useDropdown() {
 }
 
 /** Null-safe context read for callers that render outside a provider. */
-export function useDropdownMaybe() {
+function useDropdownMaybe() {
   return useContext(DropdownContext);
 }
 
@@ -148,7 +153,8 @@ const MenuItem = forwardRef<HTMLDivElement, MenuItemProps>(
     );
 
     const content = (
-      <>
+      <LazyMotion features={domAnimation}>
+        <>
         {Icon && (
           <span className="inline-grid">
             <span className="col-start-1 row-start-1 invisible">
@@ -194,7 +200,7 @@ const MenuItem = forwardRef<HTMLDivElement, MenuItemProps>(
         </span>
         <AnimatePresence>
           {checked && (
-            <motion.svg
+            <m.svg
               key="check"
               width={16}
               height={16}
@@ -209,7 +215,7 @@ const MenuItem = forwardRef<HTMLDivElement, MenuItemProps>(
               animate={{ opacity: 1 }}
               exit={{ opacity: 1 }}
             >
-              <motion.path
+              <m.path
                 d="M4 12L9 17L20 6"
                 initial={{ pathLength: skipAnimation ? 1 : 0 }}
                 animate={{
@@ -221,10 +227,11 @@ const MenuItem = forwardRef<HTMLDivElement, MenuItemProps>(
                   transition: { duration: 0.04, ease: "easeIn" },
                 }}
               />
-            </motion.svg>
+            </m.svg>
           )}
         </AnimatePresence>
-      </>
+        </>
+      </LazyMotion>
     );
 
     if (renderMenuItem) {
@@ -245,6 +252,8 @@ const MenuItem = forwardRef<HTMLDivElement, MenuItemProps>(
           <div
             ref={mergeRef}
             data-proximity-index={index}
+            role={typeof checked === "boolean" ? "menuitemradio" : "menuitem"}
+            aria-checked={typeof checked === "boolean" ? checked : undefined}
             aria-label={label}
             onClick={handleActivate}
             className={itemClassName}

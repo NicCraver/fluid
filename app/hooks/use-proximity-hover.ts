@@ -372,7 +372,7 @@ export function useProximityHover<T extends HTMLElement>(
  * Hook for child items to register themselves with the proximity hover system.
  * Call in useEffect with the item's ref and index.
  */
-export function useRegisterProximityItem(
+function useRegisterProximityItem(
   registerItem: (index: number, element: HTMLElement | null) => void,
   index: number,
   ref: RefObject<HTMLElement | null>

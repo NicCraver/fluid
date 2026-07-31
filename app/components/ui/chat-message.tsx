@@ -1,7 +1,12 @@
 "use client";
 
 import { forwardRef, type ReactNode } from "react";
-import { motion, type HTMLMotionProps } from "framer-motion";
+import {
+  LazyMotion,
+  domAnimation,
+  m,
+  type HTMLMotionProps,
+} from "framer-motion";
 import { cn } from "~/lib/utils";
 import { spring } from "~/lib/springs";
 import { useShape } from "~/lib/shape-context";
@@ -45,20 +50,21 @@ const ChatMessage = forwardRef<HTMLDivElement, ChatMessageProps>(
     const showTime = isUser && time != null;
 
     return (
-      <motion.div
-        ref={ref}
-        layout="position"
-        initial={{ opacity: 0, y: 8, scale: 0.96 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={spring.moderate}
-        style={{ transformOrigin: isUser ? "bottom right" : "bottom left" }}
-        className={cn(
-          "group flex max-w-[80%] flex-col gap-1.5",
-          isUser ? "items-end self-end" : "items-start self-start",
-          className
-        )}
-        {...props}
-      >
+      <LazyMotion features={domAnimation}>
+        <m.div
+          ref={ref}
+          layout="position"
+          initial={{ opacity: 0, y: 8, scale: 0.96 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          transition={spring.moderate}
+          style={{ transformOrigin: isUser ? "bottom right" : "bottom left" }}
+          className={cn(
+            "group flex max-w-[80%] flex-col gap-1.5",
+            isUser ? "items-end self-end" : "items-start self-start",
+            className
+          )}
+          {...props}
+        >
         {files && files.length > 0 && (
           <div
             className={cn(
@@ -66,9 +72,9 @@ const ChatMessage = forwardRef<HTMLDivElement, ChatMessageProps>(
               isUser ? "justify-end" : "justify-start"
             )}
           >
-            {files.map((file, i) => (
+            {files.map((file) => (
               <FileThumbnail
-                key={`${file.name}-${file.size}-${file.lastModified}-${i}`}
+                key={`${file.name}-${file.type}-${file.size}-${file.lastModified}-${file.webkitRelativePath}`}
                 file={file}
                 size={thumbnailSize}
               />
@@ -120,7 +126,8 @@ const ChatMessage = forwardRef<HTMLDivElement, ChatMessageProps>(
             )}
           </div>
         )}
-      </motion.div>
+        </m.div>
+      </LazyMotion>
     );
   }
 );

@@ -1,7 +1,13 @@
 "use client";
 
 import { forwardRef, useState, useEffect, type HTMLAttributes } from "react";
-import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
+import {
+  AnimatePresence,
+  LazyMotion,
+  domAnimation,
+  m,
+  useReducedMotion,
+} from "framer-motion";
 import { cn } from "~/lib/utils";
 import { fontWeights } from "~/lib/font-weight";
 
@@ -38,18 +44,19 @@ const ThinkingIndicator = forwardRef<HTMLDivElement, ThinkingIndicatorProps>(
   }, [reduceMotion]);
 
   return (
-    <div
-      ref={ref}
-      role="status"
-      className={cn("flex items-center gap-2 px-3 py-2", className)}
-      {...props}
-    >
+    <LazyMotion features={domAnimation}>
+      <div
+        ref={ref}
+        role="status"
+        className={cn("flex items-center gap-2 px-3 py-2", className)}
+        {...props}
+      >
       {/* Static announcement — the cycling word display below is aria-hidden
           so screen readers hear one "Thinking…" instead of a re-announcement
           every 4 seconds. */}
       <span className="sr-only">Thinking…</span>
       {showIcon && (
-        <motion.svg
+        <m.svg
           aria-hidden
           width={20}
           height={20}
@@ -64,7 +71,7 @@ const ThinkingIndicator = forwardRef<HTMLDivElement, ThinkingIndicatorProps>(
           {reduceMotion ? (
             <path d={infinity} />
           ) : (
-            <motion.path
+            <m.path
               animate={{
                 d: [circleA, infinity, circleB, infinity, circleA],
               }}
@@ -78,7 +85,7 @@ const ThinkingIndicator = forwardRef<HTMLDivElement, ThinkingIndicatorProps>(
               }}
             />
           )}
-        </motion.svg>
+        </m.svg>
       )}
       <span
         aria-hidden="true"
@@ -88,13 +95,14 @@ const ThinkingIndicator = forwardRef<HTMLDivElement, ThinkingIndicatorProps>(
         <span className="col-start-1 row-start-1 invisible shimmer-text">
           {words.reduce((a, b) => (a.length >= b.length ? a : b))}
         </span>
-        {reduceMotion ? (
+        {reduceMotion && (
           <span className="col-start-1 row-start-1 shimmer-text">
             {words[0]}
           </span>
-        ) : (
-          <AnimatePresence mode="popLayout" initial={false}>
-            <motion.span
+        )}
+        <AnimatePresence mode="popLayout" initial={false}>
+          {!reduceMotion && (
+            <m.span
               key={words[index]}
               className="col-start-1 row-start-1 shimmer-text"
               initial={{ y: "80%", opacity: 0 }}
@@ -102,11 +110,12 @@ const ThinkingIndicator = forwardRef<HTMLDivElement, ThinkingIndicatorProps>(
               exit={{ y: "-80%", opacity: 0, transition: { duration: 0.16, ease: [0.4, 0, 0.2, 1] } }}
             >
               {words[index]}
-            </motion.span>
-          </AnimatePresence>
-        )}
+            </m.span>
+          )}
+        </AnimatePresence>
       </span>
-    </div>
+      </div>
+    </LazyMotion>
   );
 });
 
