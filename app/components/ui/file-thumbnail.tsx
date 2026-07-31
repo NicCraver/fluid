@@ -23,8 +23,9 @@ async function loadPdfjs(): Promise<PdfjsModule> {
 }
 
 async function renderPdfFirstPage(file: File, targetWidth: number): Promise<string> {
-  const pdfjs = await loadPdfjs();
-  const buffer = await file.arrayBuffer();
+  // These two are independent (arrayBuffer doesn't need the pdfjs module), so
+  // load the library and read the file concurrently instead of sequentially.
+  const [pdfjs, buffer] = await Promise.all([loadPdfjs(), file.arrayBuffer()]);
   const pdf = await pdfjs.getDocument({ data: buffer }).promise;
   const page = await pdf.getPage(1);
   const baseViewport = page.getViewport({ scale: 1 });

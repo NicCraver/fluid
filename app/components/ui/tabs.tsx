@@ -3,8 +3,10 @@
 import {
   useRef,
   useState,
+  useMemo,
   useCallback,
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   createContext,
   useContext,
@@ -15,7 +17,7 @@ import {
   type ComponentPropsWithoutRef,
 } from "react";
 import * as TabsPrimitive from "@radix-ui/react-tabs";
-import { motion, AnimatePresence } from "framer-motion";
+import { m, AnimatePresence } from "framer-motion";
 import type { IconComponent } from "~/lib/icon-context";
 import { cn } from "~/lib/utils";
 import { spring } from "~/lib/springs";
@@ -120,14 +122,17 @@ const Tabs = forwardRef<HTMLDivElement, TabsProps>(
       [onValueChange, onSelect, valueOrder, value, selectedIndex]
     );
 
+    const valueOrderContextValue = useMemo(
+      () => ({
+        valueOrder,
+        setValueOrder: updateValueOrder,
+        selectedValue: resolvedValue,
+      }),
+      [valueOrder, updateValueOrder, resolvedValue]
+    );
+
     return (
-      <TabsValueOrderContext.Provider
-        value={{
-          valueOrder,
-          setValueOrder: updateValueOrder,
-          selectedValue: resolvedValue,
-        }}
-      >
+      <TabsValueOrderContext.Provider value={valueOrderContextValue}>
         {/*
           Always controlled: feeding the primitive an undefined-then-defined
           value flips it from uncontrolled to controlled, which Radix warns
@@ -170,17 +175,23 @@ const TabsList = forwardRef<HTMLDivElement, TabsListProps>(
     const [optimisticIdx, setOptimisticIdx] = useState<number | null>(null);
 
     // Derive value order from children synchronously
-    const values = Children.toArray(children)
-      .filter(isValidElement)
-      .map((child) => (child.props as { value?: string }).value)
-      .filter((v): v is string => typeof v === "string");
+    const values = Children.toArray(children).reduce<string[]>((acc, child) => {
+      if (isValidElement(child)) {
+        const childValue = (child.props as { value?: string }).value;
+        if (typeof childValue === "string") acc.push(childValue);
+      }
+      return acc;
+    }, []);
     const valueOrderKey = values.join(",");
     const setValueOrder = valueOrderCtx?.setValueOrder;
 
-    // Report value order up to Tabs root
+    // Report value order up to Tabs root. valueOrderKey is the stable proxy for
+    // `values`, so the effect only needs to depend on it; useEffectEvent reads
+    // the latest `values`/`setValueOrder` without widening the dependency array.
+    const emitOrder = useEffectEvent(() => setValueOrder?.(values));
     useLayoutEffect(() => {
-      setValueOrder?.(values);
-    }, [setValueOrder, valueOrderKey]);
+      emitOrder();
+    }, [valueOrderKey]);
 
     // Proximity hover
     const {
@@ -248,15 +259,18 @@ const TabsList = forwardRef<HTMLDivElement, TabsListProps>(
       return child;
     });
 
+    const listContextValue = useMemo(
+      () => ({
+        registerTab,
+        hoveredIndex,
+        selectedValue,
+        setOptimisticIdx,
+      }),
+      [registerTab, hoveredIndex, selectedValue, setOptimisticIdx]
+    );
+
     return (
-      <TabsListContext.Provider
-        value={{
-          registerTab,
-          hoveredIndex,
-          selectedValue,
-          setOptimisticIdx,
-        }}
-      >
+      <TabsListContext.Provider value={listContextValue}>
         <TabsPrimitive.List
           ref={(node) => {
             (
@@ -297,18 +311,17 @@ const TabsList = forwardRef<HTMLDivElement, TabsListProps>(
         >
           {/* Active segment indicator */}
           {selectedRect && (
-            <motion.div
+            <m.div
               className={cn(
-                "absolute pointer-events-none",
+                "absolute top-0 left-0 pointer-events-none",
                 surfaceClasses(indicatorLevel),
                 shape.bg
               )}
+              style={{ width: selectedRect.width, height: selectedRect.height }}
               initial={false}
               animate={{
-                left: selectedRect.left,
-                width: selectedRect.width,
-                top: selectedRect.top,
-                height: selectedRect.height,
+                x: selectedRect.left,
+                y: selectedRect.top,
                 opacity: isHovering ? 0.85 : 1,
               }}
               transition={{
@@ -321,33 +334,28 @@ const TabsList = forwardRef<HTMLDivElement, TabsListProps>(
           {/* Hover indicator */}
           <AnimatePresence>
             {hoverRect && !isHoveringSelected && selectedRect && (
-              <motion.div
+              <m.div
                 className={cn(
-                  "absolute pointer-events-none bg-hover",
+                  "absolute top-0 left-0 pointer-events-none bg-hover",
                   shape.bg
                 )}
+                style={{ width: hoverRect.width, height: hoverRect.height }}
                 initial={{
-                  left: selectedRect.left,
-                  width: selectedRect.width,
-                  top: selectedRect.top,
-                  height: selectedRect.height,
                   opacity: 0,
+                  x: selectedRect.left,
+                  y: selectedRect.top,
                 }}
                 animate={{
-                  left: hoverRect.left,
-                  width: hoverRect.width,
-                  top: hoverRect.top,
-                  height: hoverRect.height,
                   opacity: 0.4,
+                  x: hoverRect.left,
+                  y: hoverRect.top,
                 }}
                 exit={
                   !isMouseInside.current && selectedRect
                     ? {
-                        left: selectedRect.left,
-                        width: selectedRect.width,
-                        top: selectedRect.top,
-                        height: selectedRect.height,
                         opacity: 0,
+                        x: selectedRect.left,
+                        y: selectedRect.top,
                         transition: {
                           ...spring.moderate,
                           opacity: { duration: 0.06 },
@@ -366,17 +374,16 @@ const TabsList = forwardRef<HTMLDivElement, TabsListProps>(
           {/* Focus ring */}
           <AnimatePresence>
             {focusRect && (
-              <motion.div
+              <m.div
                 className={cn(
-                  "absolute pointer-events-none z-20 border border-[color:var(--focus-ring,#6B97FF)]",
+                  "absolute top-0 left-0 pointer-events-none z-20 border border-[color:var(--focus-ring,#6B97FF)]",
                   shape.focusRing
                 )}
+                style={{ width: focusRect.width + 4, height: focusRect.height + 4 }}
                 initial={false}
                 animate={{
-                  left: focusRect.left - 2,
-                  top: focusRect.top - 2,
-                  width: focusRect.width + 4,
-                  height: focusRect.height + 4,
+                  x: focusRect.left - 2,
+                  y: focusRect.top - 2,
                 }}
                 exit={{ opacity: 0, transition: spring.fast.exit }}
                 transition={{

@@ -1,5 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type RefObject,
+  type SetStateAction,
+} from "react";
+import { AnimatePresence, m, useReducedMotion } from "framer-motion";
 import { Sparkles, X } from "lucide-react";
 
 import {
@@ -39,42 +47,34 @@ type Turn = {
 
 const BALL_LABEL = "打开 AI 聊天（⌘I）";
 
-export function AiChatPopup() {
-  const [open, setOpen] = useState(false);
-  const [value, setValue] = useState("");
-  const [composerFiles, setComposerFiles] = useState<File[]>([]);
-  const [queue, setQueue] = useState<QueuedMessage[]>([]);
-  const [chatStatus, setChatStatus] = useState<"idle" | "streaming">("idle");
+// Stable, unique id for each chat turn so list rows key by identity instead of
+// array index (keeps React reconciliation correct across streaming + morphing).
+let turnSeq = 0;
+const nextTurnId = () =>
+  typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `turn-${(turnSeq += 1)}`;
+
+// ─── useChatEngine ──────────────────────────────────────────────────────────
+// Owns the transcript plus the simulated think→stream→settle lifecycle so the
+// popup shell stays small. Every turn is minted with a stable `id`; the thinking
+// placeholder keeps its id through streaming so the row reconciles in place.
+function useChatEngine(model: Model) {
   const [chat, setChat] = useState<Turn[]>([
     {
       from: "assistant",
       text: "嗨，我是 Fluid 助手。按 ⌘I 打开；回复中继续发送会进入队列。",
+      id: nextTurnId(),
     },
   ]);
+  const [chatStatus, setChatStatus] = useState<"idle" | "streaming">("idle");
   const [morphingId, setMorphingId] = useState<string | null>(null);
-  const [model, setModel] = useState<Model>("Sonnet 5");
-  const [attachOpen, setAttachOpen] = useState(false);
-  const [modelOpen, setModelOpen] = useState(false);
-  const [inputH, setInputH] = useState(0);
 
-  const reduceMotion = useReducedMotion() ?? false;
-  const modelRef = useRef<HTMLDivElement>(null);
-  const attachRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLDivElement>(null);
   const morphTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stepRef = useRef<{
     id: ReturnType<typeof setTimeout> | null;
     cb: (() => void) | null;
   }>({ id: null, cb: null });
-
-  const PlusIcon = useIcon("plus");
-  const ChevronDownIcon = useIcon("chevron-down");
-  const ImageIcon = useIcon("image");
-  const FileTextIcon = useIcon("square-library");
-
-  const toggle = useCallback(() => setOpen((prev) => !prev), []);
-  const close = useCallback(() => setOpen(false), []);
 
   const clearStep = useCallback(() => {
     const step = stepRef.current;
@@ -101,10 +101,13 @@ export function AiChatPopup() {
         GENERATE_MS / 1000
       } 秒的模拟回复：先思考，再逐词流式输出；期间继续发送会进入上方队列。`;
 
+      const userId = queuedId ?? nextTurnId();
+      const assistantId = nextTurnId();
+
       setChat((prev) => [
         ...prev,
-        { from: "user", text, files, id: queuedId },
-        { from: "assistant", text: "", thinking: true },
+        { from: "user", text, files, id: userId },
+        { from: "assistant", text: "", thinking: true, id: assistantId },
       ]);
       setChatStatus("streaming");
 
@@ -124,7 +127,11 @@ export function AiChatPopup() {
           const next = [...prev];
           for (let index = next.length - 1; index >= 0; index -= 1) {
             if (next[index]?.from === "assistant") {
-              next[index] = { from: "assistant", ...patch(next[index]!) };
+              next[index] = {
+                ...next[index]!,
+                from: "assistant",
+                ...patch(next[index]!),
+              };
               break;
             }
           }
@@ -151,6 +158,395 @@ export function AiChatPopup() {
     },
     [armStep, model]
   );
+
+  const handleStop = () => {
+    clearStep();
+    setChat((prev) => {
+      const next = [...prev];
+      for (let index = next.length - 1; index >= 0; index -= 1) {
+        const message = next[index];
+        if (message?.from !== "assistant") continue;
+        if (message.thinking || message.text === "") {
+          next[index] = { ...message, text: "Stopped.", thinking: false };
+        } else {
+          next[index] = { ...message, thinking: false };
+        }
+        break;
+      }
+      return next;
+    });
+    setChatStatus("idle");
+  };
+
+  useEffect(
+    () => () => {
+      clearStep();
+      if (morphTimerRef.current) clearTimeout(morphTimerRef.current);
+    },
+    [clearStep]
+  );
+
+  return { chat, chatStatus, morphingId, respond, handleStop };
+}
+
+// ─── ChatHeader ─────────────────────────────────────────────────────────────
+function ChatHeader({
+  model,
+  onClose,
+}: {
+  model: Model;
+  onClose: () => void;
+}) {
+  return (
+    <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border px-3">
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="flex size-7 items-center justify-center rounded-full bg-foreground text-background">
+          <Sparkles className="size-3.5" />
+        </span>
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium">AI Chat</p>
+          <p className="truncate text-[11px] text-muted-foreground">
+            {model} · ⌘I / Esc
+          </p>
+        </div>
+      </div>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        aria-label="关闭"
+        onClick={onClose}
+        leadingIcon={X}
+      />
+    </header>
+  );
+}
+
+// ─── ChatMessageList ────────────────────────────────────────────────────────
+function ChatMessageList({
+  scrollRef,
+  chat,
+  morphingId,
+  bottomPad,
+}: {
+  scrollRef: RefObject<HTMLDivElement | null>;
+  chat: Turn[];
+  morphingId: string | null;
+  bottomPad: number;
+}) {
+  return (
+    <div
+      ref={scrollRef}
+      className="absolute inset-0 overflow-y-auto px-3 scrollbar-hide"
+    >
+      <div
+        className="flex min-h-full flex-col justify-start gap-2 pt-2"
+        style={{ paddingBottom: bottomPad }}
+      >
+        {chat.map((message) =>
+          message.thinking ? (
+            <ChatMessage key={message.id} from="assistant">
+              <ThinkingIndicator showIcon={false} className="px-0 py-0" />
+            </ChatMessage>
+          ) : message.id && message.id === morphingId ? (
+            <ChatMessage
+              key={message.id}
+              from={message.from}
+              layoutId={`qm-${message.id}`}
+              layout
+              initial={false}
+              transition={spring.moderate}
+            >
+              <m.span layout className="inline-block align-top">
+                {message.text}
+              </m.span>
+            </ChatMessage>
+          ) : (
+            <ChatMessage
+              key={message.id}
+              from={message.from}
+              files={message.files}
+            >
+              {message.text}
+            </ChatMessage>
+          )
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── AttachMenu (composer left slot) ────────────────────────────────────────
+function AttachMenu({
+  attachRef,
+  open,
+  onToggle,
+  onClose,
+  openFilePicker,
+}: {
+  attachRef: RefObject<HTMLDivElement | null>;
+  open: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+  openFilePicker: (acceptOverride?: string) => void;
+}) {
+  const PlusIcon = useIcon("plus");
+  const ImageIcon = useIcon("image");
+  const FileTextIcon = useIcon("square-library");
+
+  return (
+    <div ref={attachRef} className="relative">
+      <Tooltip content="Add" side="top">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Attach files"
+          active={open}
+          onClick={onToggle}
+        >
+          <PlusIcon />
+        </Button>
+      </Tooltip>
+      <AnimatePresence>
+        {open && (
+          <m.div
+            className="absolute bottom-full left-0 z-10 mb-2"
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 4, transition: spring.fast.exit }}
+            transition={spring.fast}
+          >
+            <Dropdown>
+              <MenuItem
+                index={0}
+                label="Image"
+                icon={ImageIcon}
+                onSelect={() => {
+                  onClose();
+                  openFilePicker("image/png,image/jpeg");
+                }}
+              />
+              <MenuItem
+                index={1}
+                label="PDF"
+                icon={FileTextIcon}
+                onSelect={() => {
+                  onClose();
+                  openFilePicker("application/pdf");
+                }}
+              />
+            </Dropdown>
+          </m.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+// ─── ModelMenu (composer right slot) ────────────────────────────────────────
+function ModelMenu({
+  modelRef,
+  model,
+  onSelect,
+  open,
+  onToggle,
+}: {
+  modelRef: RefObject<HTMLDivElement | null>;
+  model: Model;
+  onSelect: (name: Model) => void;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const ChevronDownIcon = useIcon("chevron-down");
+
+  return (
+    <div ref={modelRef} className="relative">
+      <Tooltip content="Select model" side="top">
+        <Button
+          variant="ghost"
+          size="sm"
+          trailingIcon={ChevronDownIcon}
+          active={open}
+          onClick={onToggle}
+        >
+          {model}
+        </Button>
+      </Tooltip>
+      <AnimatePresence>
+        {open && (
+          <m.div
+            className="absolute right-0 bottom-full z-10 mb-2"
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 4, transition: spring.fast.exit }}
+            transition={spring.fast}
+          >
+            <Dropdown checkedIndex={MODELS.indexOf(model)}>
+              {MODELS.map((name, index) => (
+                <MenuItem
+                  key={name}
+                  index={index}
+                  label={name}
+                  checked={name === model}
+                  onSelect={() => onSelect(name)}
+                />
+              ))}
+            </Dropdown>
+          </m.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+interface ChatPanelRefs {
+  scroll: RefObject<HTMLDivElement | null>;
+  input: RefObject<HTMLDivElement | null>;
+  attach: RefObject<HTMLDivElement | null>;
+  model: RefObject<HTMLDivElement | null>;
+}
+
+interface ChatPanelProps {
+  refs: ChatPanelRefs;
+  model: Model;
+  onClose: () => void;
+  onSelectModel: (name: Model) => void;
+  chat: Turn[];
+  morphingId: string | null;
+  chatStatus: "idle" | "streaming";
+  inputH: number;
+  queue: QueuedMessage[];
+  setQueue: Dispatch<SetStateAction<QueuedMessage[]>>;
+  onEditQueued: (item: QueuedMessage) => void;
+  value: string;
+  onValueChange: (value: string) => void;
+  composerFiles: File[];
+  onFilesChange: (files: File[]) => void;
+  onSend: (
+    text: string,
+    files: File[],
+    meta?: { queuedId?: string }
+  ) => void;
+  onStop: () => void;
+  attachOpen: boolean;
+  setAttachOpen: Dispatch<SetStateAction<boolean>>;
+  modelOpen: boolean;
+  setModelOpen: Dispatch<SetStateAction<boolean>>;
+}
+
+// ─── ChatPanel (open state) ─────────────────────────────────────────────────
+function ChatPanel({
+  refs,
+  model,
+  onClose,
+  onSelectModel,
+  chat,
+  morphingId,
+  chatStatus,
+  inputH,
+  queue,
+  setQueue,
+  onEditQueued,
+  value,
+  onValueChange,
+  composerFiles,
+  onFilesChange,
+  onSend,
+  onStop,
+  attachOpen,
+  setAttachOpen,
+  modelOpen,
+  setModelOpen,
+}: ChatPanelProps) {
+  const stackPad = queuedStackMetrics.collapsedHeight(queue.length);
+  const bottomPad = inputH + 8 + (queue.length > 0 ? stackPad + 8 : 0);
+  const stackBottom = inputH + 8;
+  const history = chat.reduce<string[]>((acc, message) => {
+    if (message.from === "user" && message.text) acc.push(message.text);
+    return acc;
+  }, []);
+
+  return (
+    <>
+      <ChatHeader model={model} onClose={onClose} />
+
+      <div className="relative min-h-0 flex-1">
+        <ChatMessageList
+          scrollRef={refs.scroll}
+          chat={chat}
+          morphingId={morphingId}
+          bottomPad={bottomPad}
+        />
+
+        <div className="absolute inset-x-3 bottom-3">
+          <div className="relative">
+            <QueuedMessageStack
+              queue={queue}
+              onQueueChange={setQueue}
+              bottom={stackBottom}
+              onEdit={onEditQueued}
+            />
+
+            <InputMessage
+              ref={refs.input}
+              value={value}
+              onValueChange={onValueChange}
+              status={chatStatus}
+              queue={queue}
+              onQueueChange={setQueue}
+              showQueue={false}
+              history={history}
+              files={composerFiles}
+              onFilesChange={onFilesChange}
+              onSend={onSend}
+              onStop={onStop}
+              placeholder="Send while I’m responding to queue a message…"
+              leftSlot={({ openFilePicker }) => (
+                <AttachMenu
+                  attachRef={refs.attach}
+                  open={attachOpen}
+                  onToggle={() => setAttachOpen((prev) => !prev)}
+                  onClose={() => setAttachOpen(false)}
+                  openFilePicker={openFilePicker}
+                />
+              )}
+              rightSlot={
+                <ModelMenu
+                  modelRef={refs.model}
+                  model={model}
+                  onSelect={onSelectModel}
+                  open={modelOpen}
+                  onToggle={() => setModelOpen((prev) => !prev)}
+                />
+              }
+            />
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+export function AiChatPopup() {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState("");
+  const [composerFiles, setComposerFiles] = useState<File[]>([]);
+  const [queue, setQueue] = useState<QueuedMessage[]>([]);
+  const [model, setModel] = useState<Model>("Sonnet 5");
+  const [attachOpen, setAttachOpen] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
+  const [inputH, setInputH] = useState(0);
+
+  const { chat, chatStatus, morphingId, respond, handleStop } =
+    useChatEngine(model);
+
+  const reduceMotion = useReducedMotion() ?? false;
+  const modelRef = useRef<HTMLDivElement>(null);
+  const attachRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLDivElement>(null);
+
+  const toggle = useCallback(() => setOpen((prev) => !prev), []);
+  const close = useCallback(() => setOpen(false), []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -210,14 +606,6 @@ export function AiChatPopup() {
     return () => window.clearTimeout(id);
   }, [open]);
 
-  useEffect(
-    () => () => {
-      clearStep();
-      if (morphTimerRef.current) clearTimeout(morphTimerRef.current);
-    },
-    [clearStep]
-  );
-
   const editQueuedMsg = (item: QueuedMessage) => {
     setValue(item.text);
     setComposerFiles(item.files);
@@ -230,32 +618,12 @@ export function AiChatPopup() {
     });
   };
 
-  const handleStop = () => {
-    clearStep();
-    setChat((prev) => {
-      const next = [...prev];
-      for (let index = next.length - 1; index >= 0; index -= 1) {
-        const message = next[index];
-        if (message?.from !== "assistant") continue;
-        if (message.thinking || message.text === "") {
-          next[index] = { from: "assistant", text: "Stopped." };
-        } else {
-          next[index] = { ...message, thinking: false };
-        }
-        break;
-      }
-      return next;
-    });
-    setChatStatus("idle");
-  };
-
-  const stackPad = queuedStackMetrics.collapsedHeight(queue.length);
   const transition = reduceMotion
     ? { duration: 0.01 }
     : { ...spring.slow, bounce: 0.08 };
 
   return (
-    <motion.div
+    <m.div
       layout
       className={cn(
         "fixed bottom-6 right-6 z-50 flex flex-col overflow-hidden",
@@ -268,22 +636,29 @@ export function AiChatPopup() {
         borderRadius: open ? 20 : BALL / 2,
       }}
       initial={false}
-      animate={{
-        width: open ? PANEL_W : BALL,
-        height: open ? PANEL_H : BALL,
-        borderRadius: open ? 20 : BALL / 2,
-      }}
       transition={transition}
       onClick={() => {
         if (!open) setOpen(true);
       }}
+      onKeyDown={(event) => {
+        if (open) return;
+        if (
+          event.key === "Enter" ||
+          event.key === " " ||
+          event.key === "Spacebar"
+        ) {
+          event.preventDefault();
+          setOpen(true);
+        }
+      }}
+      tabIndex={open ? -1 : 0}
       role={open ? "dialog" : "button"}
       aria-label={open ? "AI 聊天" : BALL_LABEL}
       aria-expanded={open}
     >
       <AnimatePresence mode="popLayout" initial={false}>
         {open ? (
-          <motion.div
+          <m.div
             key="panel"
             className="flex h-full min-h-0 w-full flex-col"
             initial={reduceMotion ? { opacity: 1 } : { opacity: 0 }}
@@ -296,208 +671,46 @@ export function AiChatPopup() {
             transition={{ ...spring.moderate, delay: reduceMotion ? 0 : 0.06 }}
             onClick={(event) => event.stopPropagation()}
           >
-            <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border px-3">
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="flex size-7 items-center justify-center rounded-full bg-foreground text-background">
-                  <Sparkles className="size-3.5" />
-                </span>
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">AI Chat</p>
-                  <p className="truncate text-[11px] text-muted-foreground">
-                    {model} · ⌘I / Esc
-                  </p>
-                </div>
-              </div>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="关闭"
-                onClick={close}
-                leadingIcon={X}
-              />
-            </header>
-
-            <div className="relative min-h-0 flex-1">
-              <div
-                ref={scrollRef}
-                className="absolute inset-0 overflow-y-auto px-3 scrollbar-hide"
-              >
-                <div
-                  className="flex min-h-full flex-col justify-start gap-2 pt-2"
-                  style={{
-                    paddingBottom:
-                      inputH + 8 + (queue.length > 0 ? stackPad + 8 : 0),
-                  }}
-                >
-                  {chat.map((message, index) =>
-                    message.thinking ? (
-                      <ChatMessage key={index} from="assistant">
-                        <ThinkingIndicator
-                          showIcon={false}
-                          className="px-0 py-0"
-                        />
-                      </ChatMessage>
-                    ) : message.id && message.id === morphingId ? (
-                      <ChatMessage
-                        key={index}
-                        from={message.from}
-                        layoutId={`qm-${message.id}`}
-                        layout
-                        initial={false}
-                        transition={spring.moderate}
-                      >
-                        <motion.span layout className="inline-block align-top">
-                          {message.text}
-                        </motion.span>
-                      </ChatMessage>
-                    ) : (
-                      <ChatMessage
-                        key={index}
-                        from={message.from}
-                        files={message.files}
-                      >
-                        {message.text}
-                      </ChatMessage>
-                    )
-                  )}
-                </div>
-              </div>
-
-              <div className="absolute inset-x-3 bottom-3">
-                <div className="relative">
-                  <QueuedMessageStack
-                    queue={queue}
-                    onQueueChange={setQueue}
-                    bottom={inputH + 8}
-                    onEdit={editQueuedMsg}
-                  />
-
-                  <InputMessage
-                    ref={inputRef}
-                    value={value}
-                    onValueChange={setValue}
-                    status={chatStatus}
-                    queue={queue}
-                    onQueueChange={setQueue}
-                    showQueue={false}
-                    history={chat
-                      .filter((message) => message.from === "user")
-                      .map((message) => message.text)
-                      .filter(Boolean)}
-                    files={composerFiles}
-                    onFilesChange={setComposerFiles}
-                    onSend={(text, files, meta) => {
-                      respond(text, files, meta?.queuedId);
-                      if (!meta?.queuedId) {
-                        setValue("");
-                        setComposerFiles([]);
-                      }
-                    }}
-                    onStop={handleStop}
-                    placeholder="Send while I’m responding to queue a message…"
-                    leftSlot={({ openFilePicker }) => (
-                      <div ref={attachRef} className="relative">
-                        <Tooltip content="Add" side="top">
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            aria-label="Attach files"
-                            active={attachOpen}
-                            onClick={() => setAttachOpen((prev) => !prev)}
-                          >
-                            <PlusIcon />
-                          </Button>
-                        </Tooltip>
-                        <AnimatePresence>
-                          {attachOpen && (
-                            <motion.div
-                              className="absolute bottom-full left-0 z-10 mb-2"
-                              initial={{ opacity: 0, y: 4 }}
-                              animate={{ opacity: 1, y: 0 }}
-                              exit={{
-                                opacity: 0,
-                                y: 4,
-                                transition: spring.fast.exit,
-                              }}
-                              transition={spring.fast}
-                            >
-                              <Dropdown>
-                                <MenuItem
-                                  index={0}
-                                  label="Image"
-                                  icon={ImageIcon}
-                                  onSelect={() => {
-                                    setAttachOpen(false);
-                                    openFilePicker("image/png,image/jpeg");
-                                  }}
-                                />
-                                <MenuItem
-                                  index={1}
-                                  label="PDF"
-                                  icon={FileTextIcon}
-                                  onSelect={() => {
-                                    setAttachOpen(false);
-                                    openFilePicker("application/pdf");
-                                  }}
-                                />
-                              </Dropdown>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </div>
-                    )}
-                    rightSlot={
-                      <div ref={modelRef} className="relative">
-                        <Tooltip content="Select model" side="top">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            trailingIcon={ChevronDownIcon}
-                            active={modelOpen}
-                            onClick={() => setModelOpen((prev) => !prev)}
-                          >
-                            {model}
-                          </Button>
-                        </Tooltip>
-                        <AnimatePresence>
-                          {modelOpen && (
-                            <motion.div
-                              className="absolute right-0 bottom-full z-10 mb-2"
-                              initial={{ opacity: 0, y: 4 }}
-                              animate={{ opacity: 1, y: 0 }}
-                              exit={{
-                                opacity: 0,
-                                y: 4,
-                                transition: spring.fast.exit,
-                              }}
-                              transition={spring.fast}
-                            >
-                              <Dropdown checkedIndex={MODELS.indexOf(model)}>
-                                {MODELS.map((name, index) => (
-                                  <MenuItem
-                                    key={name}
-                                    index={index}
-                                    label={name}
-                                    checked={name === model}
-                                    onSelect={() => {
-                                      setModel(name);
-                                      setModelOpen(false);
-                                    }}
-                                  />
-                                ))}
-                              </Dropdown>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </div>
-                    }
-                  />
-                </div>
-              </div>
-            </div>
-          </motion.div>
+            <ChatPanel
+              refs={{
+                scroll: scrollRef,
+                input: inputRef,
+                attach: attachRef,
+                model: modelRef,
+              }}
+              model={model}
+              onClose={close}
+              onSelectModel={(name) => {
+                setModel(name);
+                setModelOpen(false);
+              }}
+              chat={chat}
+              morphingId={morphingId}
+              chatStatus={chatStatus}
+              inputH={inputH}
+              queue={queue}
+              setQueue={setQueue}
+              onEditQueued={editQueuedMsg}
+              value={value}
+              onValueChange={setValue}
+              composerFiles={composerFiles}
+              onFilesChange={setComposerFiles}
+              onSend={(text, files, meta) => {
+                respond(text, files, meta?.queuedId);
+                if (!meta?.queuedId) {
+                  setValue("");
+                  setComposerFiles([]);
+                }
+              }}
+              onStop={handleStop}
+              attachOpen={attachOpen}
+              setAttachOpen={setAttachOpen}
+              modelOpen={modelOpen}
+              setModelOpen={setModelOpen}
+            />
+          </m.div>
         ) : (
-          <motion.div
+          <m.div
             key="ball"
             className="flex size-full items-center justify-center bg-foreground text-background"
             initial={
@@ -512,9 +725,9 @@ export function AiChatPopup() {
             transition={spring.moderate}
           >
             <Sparkles className="size-5" />
-          </motion.div>
+          </m.div>
         )}
       </AnimatePresence>
-    </motion.div>
+    </m.div>
   );
 }

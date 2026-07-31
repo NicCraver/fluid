@@ -6,6 +6,7 @@ import {
   Scripts,
   ScrollRestoration,
 } from "react-router";
+import { LazyMotion, domMax } from "framer-motion";
 
 import type { Route } from "./+types/root";
 import "./app.css";
@@ -42,7 +43,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
-  return <Outlet />;
+  // domMax keeps layout/layoutId and drag (Reorder) features available to all
+  // `m` components rendered below, including portaled popovers.
+  return (
+    <LazyMotion features={domMax}>
+      <Outlet />
+    </LazyMotion>
+  );
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {

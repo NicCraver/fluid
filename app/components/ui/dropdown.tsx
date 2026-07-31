@@ -15,7 +15,7 @@ import {
   type HTMLAttributes,
   type ComponentPropsWithoutRef,
 } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { m, AnimatePresence } from "framer-motion";
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 import { cn } from "~/lib/utils";
 import { spring, exitFallbackMs } from "~/lib/springs";
@@ -24,8 +24,6 @@ import { shapeMap } from "~/lib/shape-context";
 import { Elevated } from "~/lib/elevated";
 import {
   DropdownContext,
-  useDropdown,
-  useDropdownMaybe,
   type DropdownContextValue,
   type MenuItemRenderOptions,
 } from "~/components/ui/menu-item";
@@ -45,7 +43,6 @@ const shape = shapeMap.rounded;
 // public dropdown API is unchanged.
 // ---------------------------------------------------------------------------
 
-export { useDropdown, useDropdownMaybe };
 export type { DropdownContextValue, MenuItemRenderOptions };
 
 // ---------------------------------------------------------------------------
@@ -87,8 +84,12 @@ const Dropdown = forwardRef<HTMLDivElement, DropdownProps>(
     const checkedRect =
       checkedIndex != null ? itemRects[checkedIndex] : null;
     const focusRect = focusedIndex !== null ? itemRects[focusedIndex] : null;
+    const contextValue = useMemo(
+      () => ({ registerItem, activeIndex, checkedIndex }),
+      [registerItem, activeIndex, checkedIndex]
+    );
     return (
-      <DropdownContext.Provider value={{ registerItem, activeIndex, checkedIndex }}>
+      <DropdownContext.Provider value={contextValue}>
         <Elevated
           offset={2}
           shadowLevel={3}
@@ -150,14 +151,13 @@ const Dropdown = forwardRef<HTMLDivElement, DropdownProps>(
           {/* Selected background */}
           <AnimatePresence>
             {checkedRect && (
-              <motion.div
-                className={`absolute ${shape.bg} bg-active pointer-events-none`}
+              <m.div
+                className={`absolute top-0 left-0 ${shape.bg} bg-active pointer-events-none`}
                 initial={false}
+                style={{ width: checkedRect.width, height: checkedRect.height }}
                 animate={{
-                  top: checkedRect.top,
-                  left: checkedRect.left,
-                  width: checkedRect.width,
-                  height: checkedRect.height,
+                  x: checkedRect.left,
+                  y: checkedRect.top,
                   opacity: 1,
                 }}
                 exit={{ opacity: 0, transition: spring.moderate.exit }}
@@ -172,22 +172,19 @@ const Dropdown = forwardRef<HTMLDivElement, DropdownProps>(
           {/* Hover background */}
           <AnimatePresence>
             {activeRect && (
-              <motion.div
+              <m.div
                 key={sessionRef.current}
-                className={`absolute ${shape.bg} bg-hover pointer-events-none`}
+                className={`absolute top-0 left-0 ${shape.bg} bg-hover pointer-events-none`}
+                style={{ width: activeRect.width, height: activeRect.height }}
                 initial={{
                   opacity: 0,
-                  top: checkedRect?.top ?? activeRect.top,
-                  left: checkedRect?.left ?? activeRect.left,
-                  width: checkedRect?.width ?? activeRect.width,
-                  height: checkedRect?.height ?? activeRect.height,
+                  x: checkedRect?.left ?? activeRect.left,
+                  y: checkedRect?.top ?? activeRect.top,
                 }}
                 animate={{
                   opacity: 1,
-                  top: activeRect.top,
-                  left: activeRect.left,
-                  width: activeRect.width,
-                  height: activeRect.height,
+                  x: activeRect.left,
+                  y: activeRect.top,
                 }}
                 exit={{ opacity: 0, transition: spring.fast.exit }}
                 transition={{
@@ -201,14 +198,13 @@ const Dropdown = forwardRef<HTMLDivElement, DropdownProps>(
           {/* Focus ring */}
           <AnimatePresence>
             {focusRect && (
-              <motion.div
-                className={`absolute ${shape.focusRing} pointer-events-none z-20 border border-[color:var(--focus-ring,#6B97FF)]`}
+              <m.div
+                className={`absolute top-0 left-0 ${shape.focusRing} pointer-events-none z-20 border border-[color:var(--focus-ring,#6B97FF)]`}
                 initial={false}
+                style={{ width: focusRect.width + 4, height: focusRect.height + 4 }}
                 animate={{
-                  left: focusRect.left - 2,
-                  top: focusRect.top - 2,
-                  width: focusRect.width + 4,
-                  height: focusRect.height + 4,
+                  x: focusRect.left - 2,
+                  y: focusRect.top - 2,
                 }}
                 exit={{ opacity: 0, transition: spring.fast.exit }}
                 transition={{
@@ -503,7 +499,7 @@ const DropdownContent = forwardRef<HTMLDivElement, DropdownContentProps>(
           align={align}
           sideOffset={sideOffset}
         >
-          <motion.div
+          <m.div
             className="z-50 outline-none"
             initial={{ opacity: 0, y: -4, scaleY: 0.96 }}
             animate={
@@ -569,14 +565,13 @@ const DropdownContent = forwardRef<HTMLDivElement, DropdownContentProps>(
                 {/* Selected background */}
                 <AnimatePresence>
                   {checkedRect && (
-                    <motion.div
-                      className={`absolute ${shape.bg} bg-active pointer-events-none`}
+                    <m.div
+                      className={`absolute top-0 left-0 ${shape.bg} bg-active pointer-events-none`}
                       initial={false}
+                      style={{ width: checkedRect.width, height: checkedRect.height }}
                       animate={{
-                        top: checkedRect.top,
-                        left: checkedRect.left,
-                        width: checkedRect.width,
-                        height: checkedRect.height,
+                        x: checkedRect.left,
+                        y: checkedRect.top,
                         opacity: 1,
                       }}
                       exit={{ opacity: 0, transition: spring.moderate.exit }}
@@ -591,22 +586,19 @@ const DropdownContent = forwardRef<HTMLDivElement, DropdownContentProps>(
                 {/* Hover background */}
                 <AnimatePresence>
                   {activeRect && (
-                    <motion.div
+                    <m.div
                       key={sessionRef.current}
-                      className={`absolute ${shape.bg} bg-hover pointer-events-none`}
+                      className={`absolute top-0 left-0 ${shape.bg} bg-hover pointer-events-none`}
+                      style={{ width: activeRect.width, height: activeRect.height }}
                       initial={{
                         opacity: 0,
-                        top: checkedRect?.top ?? activeRect.top,
-                        left: checkedRect?.left ?? activeRect.left,
-                        width: checkedRect?.width ?? activeRect.width,
-                        height: checkedRect?.height ?? activeRect.height,
+                        x: checkedRect?.left ?? activeRect.left,
+                        y: checkedRect?.top ?? activeRect.top,
                       }}
                       animate={{
                         opacity: 1,
-                        top: activeRect.top,
-                        left: activeRect.left,
-                        width: activeRect.width,
-                        height: activeRect.height,
+                        x: activeRect.left,
+                        y: activeRect.top,
                       }}
                       exit={{ opacity: 0, transition: spring.fast.exit }}
                       transition={{
@@ -620,14 +612,13 @@ const DropdownContent = forwardRef<HTMLDivElement, DropdownContentProps>(
                 {/* Focus ring */}
                 <AnimatePresence>
                   {focusRect && (
-                    <motion.div
-                      className={`absolute ${shape.focusRing} pointer-events-none z-20 border border-[color:var(--focus-ring,#6B97FF)]`}
+                    <m.div
+                      className={`absolute top-0 left-0 ${shape.focusRing} pointer-events-none z-20 border border-[color:var(--focus-ring,#6B97FF)]`}
                       initial={false}
+                      style={{ width: focusRect.width + 4, height: focusRect.height + 4 }}
                       animate={{
-                        left: focusRect.left - 2,
-                        top: focusRect.top - 2,
-                        width: focusRect.width + 4,
-                        height: focusRect.height + 4,
+                        x: focusRect.left - 2,
+                        y: focusRect.top - 2,
                       }}
                       exit={{ opacity: 0, transition: spring.fast.exit }}
                       transition={{
@@ -649,7 +640,7 @@ const DropdownContent = forwardRef<HTMLDivElement, DropdownContentProps>(
                 </DropdownMenuPrimitive.RadioGroup>
               </Elevated>
             </DropdownContext.Provider>
-          </motion.div>
+          </m.div>
         </DropdownMenuPrimitive.Content>
       </DropdownMenuPrimitive.Portal>
     );
@@ -682,13 +673,12 @@ DropdownLabel.displayName = "DropdownLabel";
 // ---------------------------------------------------------------------------
 
 const DropdownSeparator = forwardRef<
-  HTMLDivElement,
-  HTMLAttributes<HTMLDivElement>
+  HTMLHRElement,
+  HTMLAttributes<HTMLHRElement>
 >(({ className, ...props }, ref) => (
-  <div
+  <hr
     ref={ref}
-    role="separator"
-    className={cn("my-1 -mx-1 h-px shrink-0 bg-border/60", className)}
+    className={cn("my-1 -mx-1 h-px shrink-0 border-0 bg-border/60", className)}
     {...props}
   />
 ));

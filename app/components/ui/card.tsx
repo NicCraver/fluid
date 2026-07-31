@@ -15,7 +15,7 @@ import {
   type ReactNode,
 } from "react";
 import { Link as RouterLink } from "react-router";
-import { motion, AnimatePresence } from "framer-motion";
+import { m, AnimatePresence } from "framer-motion";
 
 function Link({
   href,
@@ -234,23 +234,20 @@ const CardGroup = forwardRef<HTMLDivElement, CardGroupProps>(
               card nearest the cursor, previewing where a click will land. */}
           <AnimatePresence>
             {activeRect && (
-              <motion.div
+              <m.div
                 key={sessionRef.current}
                 aria-hidden
-                className={cn("absolute bg-hover pointer-events-none z-0", shape.container)}
+                className={cn("absolute top-0 left-0 bg-hover pointer-events-none z-0", shape.container)}
+                style={{ width: activeRect.width, height: activeRect.height }}
                 initial={{
                   opacity: 0,
-                  top: activeRect.top,
-                  left: activeRect.left,
-                  width: activeRect.width,
-                  height: activeRect.height,
+                  x: activeRect.left,
+                  y: activeRect.top,
                 }}
                 animate={{
                   opacity: 1,
-                  top: activeRect.top,
-                  left: activeRect.left,
-                  width: activeRect.width,
-                  height: activeRect.height,
+                  x: activeRect.left,
+                  y: activeRect.top,
                 }}
                 exit={{ opacity: 0, transition: spring.fast.exit }}
                 transition={{ ...spring.fast, opacity: { duration: 0.08 } }}
@@ -354,10 +351,6 @@ const Card = forwardRef<HTMLDivElement, CardProps>(
     // the text (see the body wrapper below + CardHeader/CardFooter). Match the
     // image child by identity OR displayName so detection and the split below
     // agree even when module identity drifts (e.g. HMR duplication).
-    const isCardImage = (child: ReactNode) =>
-      isValidElement(child) &&
-      (child.type === CardImage ||
-        (child.type as { displayName?: string })?.displayName === "CardImage");
     const hasImage = Children.toArray(children).some(isCardImage);
     const inlineImage = isInline && hasImage;
     const clickable = !!href || !!onClick;
@@ -708,7 +701,7 @@ function CardMedia({ logo, logoAlt, icon: Icon, size = 22, className }: CardMedi
         className={cn("inline-flex items-center gap-1.5 shrink-0", wrap)}
       >
         {logos.map((src, i) => (
-          <span key={i} className="inline-flex items-center gap-1.5">
+          <span key={src} className="inline-flex items-center gap-1.5">
             {i > 0 && <span aria-hidden className="w-2 h-px bg-border" />}
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
@@ -780,6 +773,18 @@ function CardImage({ src, alt, className }: CardImageProps) {
 // A stable marker so the Card can recognise an image child by name, surviving
 // module-identity mismatches (e.g. HMR duplication) that break `type ===`.
 CardImage.displayName = "CardImage";
+
+// Match an image child by identity OR displayName so detection and the inline
+// split agree even when module identity drifts (e.g. HMR duplication). Declared
+// as a hoisted function so it can live at module scope while referencing
+// CardImage, which is defined above.
+function isCardImage(child: ReactNode) {
+  return (
+    isValidElement(child) &&
+    (child.type === CardImage ||
+      (child.type as { displayName?: string })?.displayName === "CardImage")
+  );
+}
 
 // ── CardEyebrow ──────────────────────────────────────────
 // Small uppercase label above the title (e.g. "New Model").

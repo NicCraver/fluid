@@ -1,7 +1,7 @@
 "use client";
 
 import { forwardRef, type ReactNode } from "react";
-import { motion, type HTMLMotionProps } from "framer-motion";
+import { m, type HTMLMotionProps } from "framer-motion";
 import { cn } from "~/lib/utils";
 import { spring } from "~/lib/springs";
 import { useShape } from "~/lib/shape-context";
@@ -45,7 +45,7 @@ const ChatMessage = forwardRef<HTMLDivElement, ChatMessageProps>(
     const showTime = isUser && time != null;
 
     return (
-      <motion.div
+      <m.div
         ref={ref}
         layout="position"
         initial={{ opacity: 0, y: 8, scale: 0.96 }}
@@ -66,9 +66,9 @@ const ChatMessage = forwardRef<HTMLDivElement, ChatMessageProps>(
               isUser ? "justify-end" : "justify-start"
             )}
           >
-            {files.map((file, i) => (
+            {files.map((file) => (
               <FileThumbnail
-                key={`${file.name}-${file.size}-${file.lastModified}-${i}`}
+                key={`${file.name}-${file.size}-${file.lastModified}`}
                 file={file}
                 size={thumbnailSize}
               />
@@ -120,7 +120,7 @@ const ChatMessage = forwardRef<HTMLDivElement, ChatMessageProps>(
             )}
           </div>
         )}
-      </motion.div>
+      </m.div>
     );
   }
 );

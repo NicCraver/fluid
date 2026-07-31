@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
-import { motion } from "framer-motion";
+import { m } from "framer-motion";
 import { cn } from "~/lib/utils";
 import { spring, exitFallbackMs } from "~/lib/springs";
 import { fontWeights } from "~/lib/font-weight";
@@ -136,9 +136,15 @@ function Tooltip({
   const portalContainer = useContext(TooltipPortalContainerContext);
   const hasAmbientProvider = useContext(TooltipGroupContext);
 
-  useEffect(() => {
-    if (open) setMounted(true);
-  }, [open]);
+  // Mount the portal as soon as the tooltip opens. This is derived during
+  // render rather than in an effect keyed on `open` (the adjust-state-on-
+  // prop-change anti-pattern): the portal is present in the same render that
+  // opens it, avoiding an extra commit/flash. The `!mounted` guard prevents a
+  // render loop, and the deferred *unmount* still happens via the exit-complete
+  // handler and the fallback timeout below.
+  if (open && !mounted) {
+    setMounted(true);
+  }
 
   // Fallback release for the deferred unmount: onAnimationComplete is the
   // primary signal, but rAF-driven animation callbacks can stall in
@@ -171,7 +177,7 @@ function Tooltip({
             forceMount
             className="z-50"
           >
-            <motion.div
+            <m.div
               className={cn(
                 // Trim recenters the label; the padding bump only applies
                 // where text-box is supported, keeping the same overall
@@ -192,7 +198,7 @@ function Tooltip({
               onAnimationComplete={handleExitComplete}
             >
               {content}
-            </motion.div>
+            </m.div>
           </TooltipPrimitive.Content>
         </TooltipPrimitive.Portal>
       )}
