@@ -1,9 +1,4 @@
----
-description: After every code change, run React Doctor and iterate until score is 100
-alwaysApply: true
----
-
-<!-- Claude mirror: .claude/rules/react-doctor-100.md — keep bodies in sync -->
+<!-- Cursor mirror: .cursor/rules/react-doctor-100.mdc — keep bodies in sync -->
 
 # React Doctor — 必须满分（100/100）
 

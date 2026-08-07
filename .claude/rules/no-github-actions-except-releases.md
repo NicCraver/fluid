@@ -1,9 +1,4 @@
----
-description: Avoid GitHub Actions except for publishing Releases (quota/cost)
-alwaysApply: true
----
-
-<!-- Claude mirror: .claude/rules/no-github-actions-except-releases.md — keep bodies in sync -->
+<!-- Cursor mirror: .cursor/rules/no-github-actions-except-releases.mdc — keep bodies in sync -->
 
 # GitHub Actions — 默认禁用
 

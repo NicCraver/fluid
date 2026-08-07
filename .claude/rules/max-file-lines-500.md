@@ -1,9 +1,4 @@
----
-description: Source files must stay at or under 500 lines
-alwaysApply: true
----
-
-<!-- Claude mirror: .claude/rules/max-file-lines-500.md — keep bodies in sync -->
+<!-- Cursor mirror: .cursor/rules/max-file-lines-500.mdc — keep bodies in sync -->
 
 # 文件行数上限 — 500 行
 

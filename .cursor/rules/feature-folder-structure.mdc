@@ -1,0 +1,69 @@
+---
+description: Organize source by feature folders; ban flat dumps at directory roots
+alwaysApply: true
+---
+
+<!-- Claude mirror: .claude/rules/feature-folder-structure.md — keep bodies in sync -->
+
+# 按功能文件夹管理代码
+
+## 强制门禁
+
+源码必须**按功能 / 组件职责建文件夹**组织；**禁止**把同一功能的多个相关文件全部平铺在目录根路径。
+
+适用范围（默认）：
+
+- `app/components/`、`app/hooks/`、`app/lib/` 及同类业务源码目录
+- `*.ts` / `*.tsx` / `*.css` 等源文件
+
+通常不计入：入口文件（如 `root.tsx`、`routes.ts`）、路由清单、生成物、`node_modules/`。
+
+## 禁止
+
+```text
+# ❌ BAD — 同功能多文件全堆在目录根
+app/components/ui/
+  card.tsx
+  card-core.tsx
+  card-header.tsx
+  card-media.tsx
+  tabs.tsx
+  tabs-list.tsx
+  tabs-items.tsx
+  input-message.tsx
+  input-message-view.tsx
+```
+
+## 要求
+
+```text
+# ✅ GOOD — 每个功能一个文件夹，公开入口再导出
+app/components/ui/
+  card/
+    index.ts          # 或 card.tsx 作为公开入口
+    card-core.tsx
+    card-header.tsx
+    card-media.tsx
+  tabs/
+    index.ts
+    tabs-list.tsx
+    tabs-items.tsx
+  input-message/
+    index.ts
+    input-message-view.tsx
+```
+
+## 工作流（不可跳过）
+
+1. 新建功能或拆分文件时，先建功能文件夹，再放入实现文件
+2. 同一功能出现 **2 个及以上**相关源文件时，必须收进同名（或语义清晰的）子目录，不得继续堆在父目录根
+3. 对外保持稳定 import：用文件夹内 `index` / 主入口再导出；调用方尽量从功能目录导入
+4. 单文件极小组件可暂留在合适的分类目录（如 `ui/badge.tsx`）；一旦拆出配套文件，立即迁入功能文件夹
+5. 未按文件夹整理不得声称完成
+
+## 原则
+
+- 文件夹名用功能/组件名（kebab-case），与公开组件名对齐
+- 一个文件夹一个主要功能；跨功能共享的放 `lib/`、`hooks/` 或明确的 `shared/`，不要硬塞进无关功能目录
+- 拆分时行为与公开 API 不变；优先改内部路径，必要时保留原路径再导出做兼容
+- 仍须满足单文件 ≤ 500 行，以及 React Doctor **100/100**
